@@ -723,3 +723,5 @@ body {
     .file-name { max-width: 100%; }
 }
 .issue-msg-text { margin-top: 3px; color: var(--text-secondary); }
+.brand-title .brand-credit { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+.brand-credit a { color: inherit; text-decoration: underline dotted; }
