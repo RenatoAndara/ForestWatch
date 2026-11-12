@@ -1,168 +1,173 @@
 <!DOCTYPE html>
+<!--
+    Revisor de Archivos GeoJSON (RFC 7946 / topología / EUDR)
+    Autor: Renato Andara
+-->
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Validador & Visualizador GeoJSON (RFC 7946 / EUDR)</title>
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <meta name="author" content="Renato Andara">
+    <meta name="description" content="Validador, visualizador y reparador local de archivos GeoJSON: formato RFC 7946, topología, solapamientos y regla de la mano derecha.">
+    <title>Revisor GeoJSON</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📐</text></svg>">
+    <!-- Leaflet 1.9.4 incluido localmente (vendor/): el mapa funciona sin CDN; solo las imágenes base requieren internet -->
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
 
-    <!-- Header -->
     <header class="app-header">
         <div class="brand-section">
-            <div class="brand-logo">📐</div>
+            <div class="brand-logo" aria-hidden="true">📐</div>
             <div class="brand-title">
-                <h1>Validador & Visualizador GeoJSON</h1>
-                <p>Verificación de Formato, Topología, Solapamiento y Regla RFC 7946 (EUDR/TRACES)</p>
+                <h1>Revisor GeoJSON</h1>
+                <p>Formato RFC 7946 · Topología · Solapamientos · Regla de la mano derecha</p>
             </div>
         </div>
 
         <div class="header-actions">
-            <span id="current-file-name" class="text-muted" style="font-size: 0.85rem; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                Ningún archivo cargado
-            </span>
+            <span id="current-file-name" class="file-name text-muted">Ningún archivo cargado</span>
+            <button id="btn-report-csv" class="btn btn-secondary" disabled title="Descargar los diagnósticos en CSV (Excel)">
+                <span aria-hidden="true">📄</span> CSV
+            </button>
+            <button id="btn-report-json" class="btn btn-secondary" disabled title="Descargar el reporte completo en JSON">
+                <span aria-hidden="true">🧾</span> JSON
+            </button>
             <button id="btn-repair" class="btn btn-success" disabled>
-                <span>🛠️</span> Reparar y Exportar RFC 7946
+                <span aria-hidden="true">🛠️</span> Reparar y exportar
             </button>
         </div>
     </header>
 
-    <!-- Main Content Grid -->
     <div class="dashboard-container">
-        
-        <!-- Left Sidebar: Diagnostics & File Controls -->
+
         <aside class="sidebar-panel">
-            
-            <!-- Drag & Drop Zone con activación nativa mediante label -->
+
             <label for="file-input" id="dropzone" class="dropzone">
-                <input type="file" id="file-input" accept=".geojson,.json,application/geo+json,application/json" style="position: absolute; width: 0.1px; height: 0.1px; opacity: 0; overflow: hidden; z-index: -1;">
-                <div class="dropzone-icon">📂</div>
+                <input type="file" id="file-input" class="visually-hidden" accept=".geojson,.json,application/geo+json,application/json">
+                <div class="dropzone-icon" aria-hidden="true">📂</div>
                 <div class="dropzone-text">
-                    <strong>Haz clic aquí o arrastra tu archivo GeoJSON</strong>
-                    <p>Formatos admitidos: .geojson, .json (FeatureCollection, Feature, Polígonos)</p>
+                    <strong>Haz clic o arrastra un archivo GeoJSON</strong>
+                    <p>.geojson / .json · El archivo se analiza en tu equipo, no se sube a ningún servidor.</p>
                 </div>
             </label>
 
-            <!-- Status Card -->
-            <div class="status-card">
+            <div class="status-card" aria-live="polite">
                 <div class="status-header">
-                    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700;">
-                        Estado de Integridad
-                    </span>
+                    <span class="status-caption">Estado del archivo</span>
                     <div id="overall-status-badge" class="status-pill status-info">
-                        <span>⏳</span> <strong>PENDIENTE DE ARCHIVO</strong>
+                        <span>⏳</span> <strong>SIN ARCHIVO</strong>
                     </div>
                 </div>
                 <div id="overall-status-text" class="status-text">
-                    Carga un archivo GeoJSON para iniciar el diagnóstico técnico y topológico.
+                    Carga un archivo GeoJSON para iniciar el diagnóstico.
                 </div>
             </div>
 
-            <!-- Metrics Counters -->
             <div class="metrics-grid">
                 <div class="metric-card">
                     <div id="metric-errors-count" class="metric-number text-error">0</div>
-                    <div class="metric-label">Errores Críticos</div>
+                    <div class="metric-label">Errores</div>
                 </div>
                 <div class="metric-card">
                     <div id="metric-warnings-count" class="metric-number text-warning">0</div>
-                    <div class="metric-label">Alertas RFC 7946</div>
+                    <div class="metric-label">Alertas</div>
                 </div>
                 <div class="metric-card">
                     <div id="metric-features-count" class="metric-number text-success">0</div>
-                    <div class="metric-label">Parcelas / Features</div>
+                    <div class="metric-label">Entidades</div>
+                </div>
+                <div class="metric-card">
+                    <div id="metric-area" class="metric-number metric-number-sm">—</div>
+                    <div class="metric-label">Área total</div>
                 </div>
             </div>
 
-            <!-- RFC 7946 Info Callout -->
-            <div class="rfc-notice-box">
-                <strong>Estándar RFC 7946 §3.1.6 (Regla de la Mano Derecha):</strong>
-                <br>
-                El anillo exterior debe ser <strong>antihorario (CCW)</strong> y los interiores <strong>horarios (CW)</strong>.
-                Si no se cumple, el sistema emite una <strong>ALERTA</strong> (no error) requerida por normas estrictas como <strong>TRACES / EUDR</strong> de la UE.
-            </div>
+            <details class="rfc-notice-box">
+                <summary>¿Qué se revisa?</summary>
+                <ul>
+                    <li><strong>Error:</strong> JSON o estructura inválida, coordenadas fuera de WGS84 o no numéricas, anillos abiertos o con menos de 4 posiciones, vértices duplicados, auto-intersecciones, espigas, puntos de contacto, huecos fuera del polígono y solapamientos entre parcelas o partes.</li>
+                    <li><strong>Alerta:</strong> orientación contraria a la regla de la mano derecha (RFC 7946 §3.1.6: exterior antihorario, huecos horarios), miembro <code>crs</code> obsoleto, identificadores repetidos, falta de <code>properties</code>.</li>
+                    <li><strong>Info:</strong> precisión de coordenadas menor a 6 decimales, geometrías de punto.</li>
+                </ul>
+                Las parcelas colindantes que solo comparten linderos <strong>no</strong> se consideran solapadas.
+            </details>
 
-            <!-- Diagnostics Issues Table -->
             <div class="diagnostics-section">
-                <div class="tabs-header">
-                    <button class="filter-tab active" data-filter="ALL">Todos</button>
-                    <button class="filter-tab" data-filter="ERROR">Errores ❌</button>
-                    <button class="filter-tab" data-filter="ALERTA">Alertas ⚠️</button>
-                    <button class="filter-tab" data-filter="INFO">Información ℹ️</button>
+                <div class="tabs-header" role="tablist">
+                    <button class="filter-tab active" role="tab" aria-selected="true" data-filter="ALL">Todos <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="ERROR">Errores <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="ALERTA">Alertas <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="INFO">Info <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="FEATURES">Entidades <span class="tab-count"></span></button>
                 </div>
+                <input type="search" id="issues-search" class="search-input" placeholder="Buscar por parcela, categoría o texto…" aria-label="Buscar en los diagnósticos">
 
                 <div class="table-wrapper">
                     <table class="issues-table">
-                        <thead>
-                            <tr>
-                                <th style="width: 80px;">Nivel</th>
-                                <th style="width: 140px;">Categoría</th>
-                                <th>Mensaje / Diagnóstico</th>
-                                <th style="width: 90px;">Ubicación</th>
-                            </tr>
+                        <thead id="issues-table-head">
+                            <tr><th style="width:74px">Nivel</th><th>Diagnóstico</th><th style="width:92px">Ubicación</th></tr>
                         </thead>
-                        <tbody id="issues-table-body">
-                            <!-- Populated dynamically -->
-                        </tbody>
+                        <tbody id="issues-table-body"></tbody>
                     </table>
-                    <div id="issues-empty-state" style="text-align: center; padding: 30px 10px; color: var(--text-muted); font-size: 0.85rem;">
-                        No hay diagnósticos pendientes. Carga un archivo para ver los resultados.
+                    <div id="issues-empty-state" class="empty-state">
+                        Aún no hay diagnósticos. Carga un archivo para ver los resultados.
                     </div>
                 </div>
             </div>
-
         </aside>
 
-        <!-- Right Viewport: Interactive Map -->
         <main class="map-viewport">
-            <!-- Map Toolbar Controls -->
             <div class="map-toolbar">
                 <label class="map-toggle-label">
                     <input type="checkbox" id="toggle-arrows" checked>
-                    <span>Flechas de Dirección (CCW/CW)</span>
+                    <span>Flechas de dirección</span>
                 </label>
                 <label class="map-toggle-label">
                     <input type="checkbox" id="toggle-vertices" checked>
-                    <span>Números de Vértices (1..N)</span>
+                    <span>Números de vértice</span>
                 </label>
+                <button id="btn-fit" type="button" class="btn btn-secondary btn-small" title="Encuadrar todas las geometrías">⤢ Encuadrar</button>
+                <span class="map-legend">
+                    <i style="background:#10b981"></i>Válida
+                    <i style="background:#f59e0b"></i>Alerta
+                    <i style="background:#ef4444"></i>Error
+                </span>
             </div>
-
-            <!-- Leaflet Map Container -->
+            <div id="map-note" class="map-note" hidden></div>
             <div id="map"></div>
         </main>
-
     </div>
 
-    <!-- Auto-Repair Modal -->
-    <div id="repair-modal" class="modal-overlay hidden">
+    <div id="repair-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="repair-title">
         <div class="modal-dialog">
             <div class="modal-header">
-                <h3>🛠️ Reparación Automática GeoJSON RFC 7946</h3>
-                <button id="btn-close-modal" class="btn btn-secondary" style="padding: 2px 8px;">✕</button>
+                <h3 id="repair-title">🛠️ Reparación automática</h3>
+                <button id="btn-close-modal" class="btn btn-secondary btn-small" aria-label="Cerrar">✕</button>
             </div>
             <div class="modal-body">
-                <p>El motor analizó el archivo y aplicó las siguientes correcciones automáticas:</p>
-                <ul id="repair-notes-list" class="repair-notes-list">
-                    <!-- Populated dynamically -->
-                </ul>
-                <p style="margin-top: 14px; font-size: 0.8rem; color: var(--text-secondary);">
-                    El archivo resultante asegura anillos cerrados, eliminación de vértices duplicados adyacentes y orientación de anillos conforme a la regla de la mano derecha RFC 7946 (CCW en perímetro exterior).
-                </p>
+                <p>Correcciones aplicadas (no cambian la forma de las parcelas):</p>
+                <ul id="repair-notes-list" class="repair-notes-list"></ul>
+                <div id="repair-after" class="repair-after"></div>
+                <label class="modal-option">
+                    <input type="checkbox" id="opt-metadata">
+                    Añadir bloque <code>metadata</code> con el registro de cambios
+                    <small class="text-muted">(miembro adicional permitido por RFC 7946, pero algunos sistemas de carga lo rechazan)</small>
+                </label>
             </div>
             <div class="modal-footer">
-                <button id="btn-download-fixed" class="btn btn-success">
-                    <span>💾</span> Descargar GeoJSON Corregido
-                </button>
+                <button id="btn-load-fixed" class="btn btn-secondary">🔁 Revisar el archivo reparado</button>
+                <button id="btn-download-fixed" class="btn btn-success">💾 Descargar GeoJSON corregido</button>
             </div>
         </div>
     </div>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <!-- App Script (Compatible con file:/// y http://) -->
+    <script src="vendor/leaflet/leaflet.js"></script>
+    <!-- Scripts clásicos (no módulos): funcionan con doble clic (file://) y con serve.py -->
+    <script src="js/validator.js"></script>
+    <script src="js/repair.js"></script>
+    <script src="js/map.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

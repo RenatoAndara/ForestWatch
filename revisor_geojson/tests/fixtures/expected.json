@@ -1,0 +1,64 @@
+{
+  "_autor": "Renato Andara",
+  "_descripcion": "Resultados esperados compartidos por las pruebas JS (tests/test_validator.test.js) y Python (tests/test_validator.py).",
+  "valida_colindantes.geojson": {
+    "status": "VALIDO",
+    "errors": 0,
+    "warnings": 0,
+    "categories": []
+  },
+  "auto_interseccion.geojson": {
+    "status": "ERROR",
+    "categories": [
+      "Auto-intersección / Solapamiento de Bordes"
+    ],
+    "location": [
+      -71.748456,
+      7.930234
+    ],
+    "repaired_status": "ERROR"
+  },
+  "orientacion_horaria.geojson": {
+    "status": "ALERTA",
+    "errors": 0,
+    "warnings": 1,
+    "categories": [
+      "Regla de la Mano Derecha (RFC 7946)"
+    ],
+    "repaired_status": "VALIDO"
+  },
+  "solapamiento_parcelas.geojson": {
+    "status": "ERROR",
+    "errors": 1,
+    "categories": [
+      "Solapamiento Inter-Parcelas"
+    ]
+  },
+  "anillo_abierto_duplicados.geojson": {
+    "status": "ERROR",
+    "categories": [
+      "Anillo Abierto"
+    ],
+    "repaired_status": "VALIDO"
+  },
+  "hueco_fuera.geojson": {
+    "status": "ERROR",
+    "categories": [
+      "Hueco fuera del Exterior"
+    ]
+  },
+  "utm_con_crs.geojson": {
+    "status": "ERROR",
+    "categories": [
+      "Límites WGS84",
+      "Sistema de Referencia (crs)"
+    ]
+  },
+  "json_invalido.geojson": {
+    "status": "ERROR",
+    "errors": 1,
+    "categories": [
+      "Sintaxis JSON"
+    ]
+  }
+}

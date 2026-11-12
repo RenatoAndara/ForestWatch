@@ -1,9 +1,12 @@
 {
   "name": "revisor-geojson",
-  "version": "1.0.0",
-  "type": "module",
-  "description": "Validador e Inspector de Integridad GeoJSON RFC 7946",
+  "version": "2.0.0",
+  "description": "Validador, visualizador y reparador de archivos GeoJSON (RFC 7946 / topología / EUDR)",
+  "author": "Renato Andara",
+  "license": "UNLICENSED",
+  "private": true,
   "scripts": {
-    "test": "node tests/test_js_validator.js"
+    "test": "node --test tests/test_validator.test.js",
+    "test:py": "python3 -m unittest discover -s tests -v"
   }
 }

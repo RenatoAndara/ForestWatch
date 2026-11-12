@@ -1,426 +1,311 @@
 /**
- * Interactive Cartographic Viewer for GeoJSON Inspector
- * Handles Leaflet map rendering, satellite/street layers, issue highlighting,
- * vertex numbering, and direction arrows (CCW / CW).
+ * Visor Cartográfico del Revisor GeoJSON (Leaflet + respaldo SVG sin conexión)
+ *
+ * Autor: Renato Andara
+ *
+ * - Colorea cada parcela según SU estado (verde válido, ámbar alerta, rojo error).
+ * - Marca el punto exacto de cada problema y resalta los segmentos en conflicto.
+ * - Flechas de dirección y numeración de vértices (se limitan en archivos grandes).
+ * - Si Leaflet no carga (sin internet), dibuja las geometrías en SVG.
+ *
+ * Requiere: js/validator.js (GeoUtils) cargado antes.
  */
+(function (root) {
+    'use strict';
 
-export class GeoJSONMapViewer {
-    constructor(containerId) {
-        this.containerId = containerId;
-        this.map = null;
-        this.geojsonLayer = null;
-        this.issuesLayer = null;
-        this.arrowsLayer = null;
-        this.verticesLayer = null;
-        this.conflictSegmentsLayer = null;
-        this.currentData = null;
-        this.validationResult = null;
-        this.showArrows = true;
-        this.showVertices = true;
+    const GeoUtils = root.GeoUtils;
+    const esc = GeoUtils.escapeHtml;
 
-        this.init();
+    const STATUS_COLORS = { VALIDO: '#10b981', ALERTA: '#f59e0b', ERROR: '#ef4444' };
+    const STATUS_BADGE = {
+        VALIDO: '<span class="badge badge-success">✅ Válida</span>',
+        ALERTA: '<span class="badge badge-warning">⚠️ Con alertas</span>',
+        ERROR: '<span class="badge badge-error">❌ Con errores</span>'
+    };
+    // Por encima de este número de vértices no se dibujan números ni flechas
+    // (miles de marcadores DOM congelan el navegador).
+    const MAX_DECORATED_VERTICES = 3000;
+
+    /** Anillos de polígono de una geometría (incluye GeometryCollection). */
+    function polygonRings(geom) {
+        if (!geom || typeof geom !== 'object') return [];
+        const ok = r => Array.isArray(r) && r.length >= 2 && r.every(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
+            return geom.coordinates.filter(ok).map((r, i) => ({ ring: r, exterior: i === 0 }));
+        }
+        if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+            return geom.coordinates.flatMap(poly => Array.isArray(poly)
+                ? poly.filter(ok).map((r, i) => ({ ring: r, exterior: i === 0 })) : []);
+        }
+        if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+            return geom.geometries.flatMap(polygonRings);
+        }
+        return [];
     }
 
-    init() {
-        const container = document.getElementById(this.containerId);
-        if (!container) return;
-
-        // Check if Leaflet L is available
-        if (typeof L === 'undefined') {
-            this._renderFallbackViewer(container);
-            return;
-        }
-
-        // Initialize Leaflet map
-        this.map = L.map(this.containerId, {
-            center: [7.935, -71.747],
-            zoom: 15,
-            zoomControl: false
-        });
-
-        L.control.zoom({ position: 'topright' }).addTo(this.map);
-
-        // Tile layers
-        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© OpenStreetMap contributors'
-        });
-
-        const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            maxZoom: 19,
-            attribution: 'Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
-        });
-
-        // Default to Satellite for farming/agricultural parcels
-        esriSatellite.addTo(this.map);
-
-        const baseMaps = {
-            "🛰️ Satélite de Alta Resolución (Esri)": esriSatellite,
-            "🗺️ Mapa Callejero (OpenStreetMap)": osmLayer
-        };
-
-        this.layerControl = L.control.layers(baseMaps, null, { position: 'topright' }).addTo(this.map);
-
-        // Layer groups
-        this.geojsonLayer = L.geoJSON(null).addTo(this.map);
-        this.conflictSegmentsLayer = L.layerGroup().addTo(this.map);
-        this.issuesLayer = L.layerGroup().addTo(this.map);
-        this.arrowsLayer = L.layerGroup().addTo(this.map);
-        this.verticesLayer = L.layerGroup().addTo(this.map);
+    function featuresOf(data) {
+        if (!data || typeof data !== 'object') return [];
+        if (data.type === 'FeatureCollection') return Array.isArray(data.features) ? data.features : [];
+        if (data.type === 'Feature') return [data];
+        if (data.type) return [{ type: 'Feature', properties: {}, geometry: data }];
+        return [];
     }
 
-    render(data, validationResult) {
-        this.currentData = data;
-        this.validationResult = validationResult;
-
-        if (!this.map) {
-            this._renderFallbackData();
-            return;
+    class GeoJSONMapViewer {
+        constructor(containerId) {
+            this.containerId = containerId;
+            this.map = null;
+            this.featureLayers = [];
+            this.showArrows = true;
+            this.showVertices = true;
+            this.decorationsSkipped = false;
+            this.init();
         }
 
-        this.clear();
+        init() {
+            const container = document.getElementById(this.containerId);
+            if (!container) return;
 
-        if (!data) return;
+            if (typeof root.L === 'undefined') {
+                this._initFallback(container);
+                return;
+            }
+            const L = root.L;
 
-        const hasErrors = validationResult?.summary?.errors > 0;
-        const hasWarnings = validationResult?.summary?.warnings > 0;
+            this.map = L.map(this.containerId, { center: [10, -40], zoom: 3, zoomControl: false, preferCanvas: true });
+            L.control.zoom({ position: 'topright' }).addTo(this.map);
+            L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(this.map);
 
-        const polyColor = hasErrors ? '#ef4444' : (hasWarnings ? '#f59e0b' : '#10b981');
+            const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 20, maxNativeZoom: 19,
+                attribution: 'Imágenes © Esri, Maxar, Earthstar Geographics y la comunidad de usuarios SIG'
+            });
+            const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 20, maxNativeZoom: 19, attribution: '© colaboradores de OpenStreetMap'
+            });
+            satellite.addTo(this.map);
 
-        // Style and add GeoJSON layer
-        this.geojsonLayer = L.geoJSON(data, {
-            style: (feature) => ({
-                color: polyColor,
-                weight: 3,
-                opacity: 0.9,
-                fillColor: polyColor,
-                fillOpacity: 0.25
-            }),
-            onEachFeature: (feature, layer) => {
-                const props = feature.properties || {};
-                const plotId = props.PlotID || props.id || props.name || 'Sin ID';
-                const nodeId = props.NodeID || props.node || 'N/A';
+            this.geojsonLayer = L.featureGroup().addTo(this.map);
+            this.conflictSegmentsLayer = L.layerGroup().addTo(this.map);
+            this.issuesLayer = L.layerGroup().addTo(this.map);
+            this.arrowsLayer = L.layerGroup().addTo(this.map);
+            this.verticesLayer = L.layerGroup().addTo(this.map);
 
-                const metrics = this._calculateGeometryMetrics(feature.geometry);
-                const statusBadge = hasErrors 
-                    ? '<span class="badge badge-error">❌ Errores Topológicos</span>'
-                    : (hasWarnings 
-                        ? '<span class="badge badge-warning">⚠️ Alerta RFC 7946</span>' 
-                        : '<span class="badge badge-success">✅ Válido RFC 7946</span>');
+            L.control.layers(
+                { '🛰️ Satélite (Esri)': satellite, '🗺️ Callejero (OpenStreetMap)': streets },
+                { 'Problemas detectados': this.issuesLayer, 'Segmentos en conflicto': this.conflictSegmentsLayer },
+                { position: 'topright' }
+            ).addTo(this.map);
+        }
 
-                const popupContent = `
-                    <div class="map-popup-card">
-                        <div class="popup-header">
-                            <h4>${plotId}</h4>
-                            ${statusBadge}
-                        </div>
-                        <div class="popup-body">
-                            <p><strong>Nodo:</strong> ${nodeId}</p>
-                            <p><strong>Área estimada:</strong> ${metrics.areaHa.toFixed(2)} ha (${metrics.areaM2.toLocaleString('es-ES', { maximumFractionDigits: 0 })} m²)</p>
-                            <p><strong>Perímetro:</strong> ${metrics.perimeterM.toFixed(1)} m</p>
-                            <p><strong>Total vértices:</strong> ${metrics.vertexCount}</p>
-                        </div>
+        /**
+         * Dibuja los datos. Devuelve { decorationsSkipped, totalVertices }.
+         */
+        render(data, validationResult) {
+            this.currentData = data;
+            this.validationResult = validationResult;
+            this.clear();
+            if (!data) return { decorationsSkipped: false, totalVertices: 0 };
+
+            if (!this.map) return this._renderFallback();
+
+            const L = root.L;
+            const featureInfo = validationResult?.features || [];
+            const features = featuresOf(data);
+
+            features.forEach((feat, idx) => {
+                if (!feat || !feat.geometry) return;
+                const info = featureInfo[idx] || {};
+                const status = info.status || 'VALIDO';
+                const color = STATUS_COLORS[status] || STATUS_COLORS.VALIDO;
+                let layer;
+                try {
+                    layer = L.geoJSON(feat, {
+                        style: () => ({ color, weight: 3, opacity: 0.95, fillColor: color, fillOpacity: 0.22 }),
+                        pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius: 7, color, fillColor: color, fillOpacity: 0.7, weight: 2 })
+                    });
+                } catch (e) {
+                    return; // geometría que Leaflet no puede dibujar (ya reportada por el validador)
+                }
+                layer.bindPopup(() => this._featurePopup(feat, idx, info, status));
+                layer.addTo(this.geojsonLayer);
+                this.featureLayers[idx] = layer;
+            });
+
+            this.fitAll();
+
+            const totalVertices = features.reduce((s, f) => s + polygonRings(f && f.geometry).reduce((a, r) => a + r.ring.length - 1, 0), 0);
+            this.decorationsSkipped = totalVertices > MAX_DECORATED_VERTICES;
+            if (!this.decorationsSkipped) this._renderDecorations(features);
+
+            if (validationResult?.issues) this._renderIssues(validationResult.issues);
+            return { decorationsSkipped: this.decorationsSkipped, totalVertices };
+        }
+
+        _featurePopup(feat, idx, info, status) {
+            const props = (feat.properties && typeof feat.properties === 'object') ? feat.properties : {};
+            const rows = Object.entries(props).slice(0, 12).map(([k, v]) =>
+                `<tr><th>${esc(k)}</th><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('');
+            const area = info.area_ha != null
+                ? `<p><strong>Área:</strong> ${info.area_ha.toLocaleString('es-ES', { maximumFractionDigits: 4 })} ha</p>
+                   <p><strong>Perímetro:</strong> ${info.perimeter_m.toLocaleString('es-ES', { maximumFractionDigits: 1 })} m</p>` : '';
+            return `
+                <div class="map-popup-card">
+                    <div class="popup-header">
+                        <h4>${esc(info.plot_id || GeoUtils.featureLabel(feat, idx))}</h4>
+                        ${STATUS_BADGE[status] || ''}
                     </div>
-                `;
-                layer.bindPopup(popupContent);
-            }
-        }).addTo(this.map);
-
-        // Auto zoom and fit bounds with padding
-        try {
-            const bounds = this.geojsonLayer.getBounds();
-            if (bounds.isValid()) {
-                this.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-            }
-        } catch (e) {
-            console.warn('Could not fit bounds:', e);
+                    <div class="popup-body">
+                        <p><strong>Geometría:</strong> ${esc(feat.geometry?.type || '—')} · <strong>Vértices:</strong> ${info.vertices ?? '—'}</p>
+                        ${area}
+                        <p><strong>Errores:</strong> ${info.errors ?? 0} · <strong>Alertas:</strong> ${info.warnings ?? 0}</p>
+                        ${rows ? `<table class="popup-props">${rows}</table>` : ''}
+                    </div>
+                </div>`;
         }
 
-        // Render direction arrows & vertices
-        this._renderDirectionArrowsAndVertices(data);
-
-        // Render issue markers and conflict segments
-        if (validationResult && validationResult.issues) {
-            this._renderIssues(validationResult.issues);
-        }
-    }
-
-    _renderIssues(issues) {
-        issues.forEach((issue) => {
-            if (issue.location && issue.location.length >= 2) {
-                const [lon, lat] = issue.location;
+        _renderIssues(issues) {
+            const L = root.L;
+            issues.forEach(issue => {
+                if (issue.severity === 'INFO') return;
                 const isError = issue.severity === 'ERROR';
-
-                // Pulse marker for errors
-                const markerHtml = isError 
-                    ? `<div class="issue-marker-pulse issue-marker-error" title="${issue.category}"></div>`
-                    : `<div class="issue-marker-pulse issue-marker-warning" title="${issue.category}"></div>`;
-
-                const icon = L.divIcon({
-                    className: 'custom-issue-marker',
-                    html: markerHtml,
-                    iconSize: [24, 24],
-                    iconAnchor: [12, 12]
-                });
-
-                const marker = L.marker([lat, lon], { icon }).addTo(this.issuesLayer);
-                marker.bindPopup(`
-                    <div class="issue-popup">
-                        <div class="issue-popup-title ${isError ? 'text-error' : 'text-warning'}">
-                            ${isError ? '❌ Error' : '⚠️ Alerta'}: ${issue.category}
-                        </div>
-                        <div class="issue-popup-msg">${issue.message}</div>
-                        <div class="issue-popup-coord">📍 [${lon.toFixed(6)}, ${lat.toFixed(6)}]</div>
-                    </div>
-                `);
-            }
-
-            // Highlight conflicting segments if detected
-            if (issue.details && issue.details.seg1Coords && issue.details.seg2Coords) {
-                const seg1 = issue.details.seg1Coords.map(p => [p[1], p[0]]);
-                const seg2 = issue.details.seg2Coords.map(p => [p[1], p[0]]);
-
-                L.polyline(seg1, {
-                    color: '#ff0055',
-                    weight: 6,
-                    opacity: 0.9,
-                    dashArray: '6, 6'
-                }).bindTooltip(`Segmento en conflicto (${issue.details.seg1Indices[0]}-${issue.details.seg1Indices[1]})`).addTo(this.conflictSegmentsLayer);
-
-                L.polyline(seg2, {
-                    color: '#ff0055',
-                    weight: 6,
-                    opacity: 0.9,
-                    dashArray: '6, 6'
-                }).bindTooltip(`Segmento en conflicto (${issue.details.seg2Indices[0]}-${issue.details.seg2Indices[1]})`).addTo(this.conflictSegmentsLayer);
-            }
-        });
-    }
-
-    _renderDirectionArrowsAndVertices(data) {
-        if (!data) return;
-
-        const extractRings = (geom) => {
-            if (!geom) return [];
-            if (geom.type === 'Polygon') return geom.coordinates;
-            if (geom.type === 'MultiPolygon') return geom.coordinates.flat();
-            return [];
-        };
-
-        const features = data.type === 'FeatureCollection' ? data.features : (data.type === 'Feature' ? [data] : []);
-
-        features.forEach((feat) => {
-            const rings = extractRings(feat.geometry);
-            rings.forEach((ring, rIdx) => {
-                if (!Array.isArray(ring) || ring.length < 3) return;
-
-                const isExterior = (rIdx === 0);
-
-                // Add vertices markers
-                ring.forEach((pt, pIdx) => {
-                    // Do not duplicate the closing point marker
-                    if (pIdx === ring.length - 1) return;
-
-                    const [lon, lat] = pt;
-                    const vIcon = L.divIcon({
-                        className: 'vertex-number-icon',
-                        html: `<span class="vertex-dot">${pIdx + 1}</span>`,
-                        iconSize: [18, 18],
-                        iconAnchor: [9, 9]
+                if (Array.isArray(issue.location) && Number.isFinite(issue.location[0]) && Number.isFinite(issue.location[1])) {
+                    const [lon, lat] = issue.location;
+                    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+                        const icon = L.divIcon({
+                            className: 'custom-issue-marker',
+                            html: `<div class="issue-marker-pulse ${isError ? 'issue-marker-error' : 'issue-marker-warning'}"></div>`,
+                            iconSize: [24, 24], iconAnchor: [12, 12]
+                        });
+                        L.marker([lat, lon], { icon, title: issue.category }).bindPopup(`
+                            <div class="issue-popup">
+                                <div class="issue-popup-title ${isError ? 'text-error' : 'text-warning'}">${isError ? '❌ Error' : '⚠️ Alerta'}: ${esc(issue.category)}</div>
+                                <div class="issue-popup-msg">${esc(issue.message)}</div>
+                                <div class="issue-popup-coord">📍 [${lon.toFixed(6)}, ${lat.toFixed(6)}]</div>
+                            </div>`).addTo(this.issuesLayer);
+                    }
+                }
+                const d = issue.details || {};
+                if (d.seg1Coords && d.seg2Coords) {
+                    [[d.seg1Coords, d.seg1Indices], [d.seg2Coords, d.seg2Indices]].forEach(([coords, ids]) => {
+                        L.polyline(coords.map(p => [p[1], p[0]]), { color: '#ff0055', weight: 6, opacity: 0.9, dashArray: '6, 6' })
+                            .bindTooltip(`Segmento en conflicto (${ids[0]}-${ids[1]})`)
+                            .addTo(this.conflictSegmentsLayer);
                     });
-                    const vMarker = L.marker([lat, lon], { icon: vIcon });
-                    vMarker.bindTooltip(`Vértice #${pIdx + 1}: [${lon.toFixed(6)}, ${lat.toFixed(6)}]`);
-                    vMarker.addTo(this.verticesLayer);
-                });
-
-                // Add directional arrows at intermediate points of segments
-                for (let i = 0; i < ring.length - 1; i++) {
-                    const p1 = ring[i];
-                    const p2 = ring[i + 1];
-                    const midLon = (p1[0] + p2[0]) / 2;
-                    const midLat = (p1[1] + p2[1]) / 2;
-
-                    // Calculate bearing/angle
-                    const angle = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]) * (180 / Math.PI);
-                    // Leaflet coordinate transform: angle from east counterclockwise
-                    const rot = 90 - angle;
-
-                    const arrowIcon = L.divIcon({
-                        className: 'arrow-direction-icon',
-                        html: `<div style="transform: rotate(${rot}deg);" class="arrow-svg-box">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${isExterior ? '#38bdf8' : '#fbbf24'}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                                    <line x1="12" y1="19" x2="12" y2="5"></line>
-                                    <polyline points="5 12 12 5 19 12"></polyline>
-                                </svg>
-                               </div>`,
-                        iconSize: [14, 14],
-                        iconAnchor: [7, 7]
-                    });
-
-                    L.marker([midLat, midLon], { icon: arrowIcon }).addTo(this.arrowsLayer);
                 }
             });
-        });
-    }
-
-    zoomToLocation(lon, lat, zoom = 18) {
-        if (this.map && typeof lat === 'number' && typeof lon === 'number') {
-            this.map.flyTo([lat, lon], zoom, { duration: 1.2 });
         }
-    }
 
-    toggleArrows(show) {
-        this.showArrows = show;
-        if (show) {
-            this.arrowsLayer.addTo(this.map);
-        } else {
-            this.map.removeLayer(this.arrowsLayer);
+        _renderDecorations(features) {
+            const L = root.L;
+            features.forEach(feat => {
+                polygonRings(feat && feat.geometry).forEach(({ ring, exterior }) => {
+                    for (let i = 0; i < ring.length - 1; i++) {
+                        const [lon, lat] = ring[i];
+                        L.marker([lat, lon], {
+                            icon: L.divIcon({ className: 'vertex-number-icon', html: `<span class="vertex-dot">${i + 1}</span>`, iconSize: [18, 18], iconAnchor: [9, 9] }),
+                            keyboard: false
+                        }).bindTooltip(`Vértice ${i + 1} (índice ${i}): [${lon.toFixed(6)}, ${lat.toFixed(6)}]`).addTo(this.verticesLayer);
+
+                        const p1 = ring[i], p2 = ring[i + 1];
+                        if (GeoUtils.samePoint(p1, p2)) continue;
+                        // Ángulo en pantalla: corrige la distorsión de Mercator con cos(lat).
+                        const dx = (p2[0] - p1[0]) * Math.cos(((p1[1] + p2[1]) / 2) * Math.PI / 180);
+                        const dy = p2[1] - p1[1];
+                        const rot = 90 - Math.atan2(dy, dx) * 180 / Math.PI;
+                        L.marker([(p1[1] + p2[1]) / 2, (p1[0] + p2[0]) / 2], {
+                            icon: L.divIcon({
+                                className: 'arrow-direction-icon',
+                                html: `<div style="transform: rotate(${rot}deg);" class="arrow-svg-box">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${exterior ? '#38bdf8' : '#fbbf24'}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline>
+                                    </svg></div>`,
+                                iconSize: [14, 14], iconAnchor: [7, 7]
+                            }),
+                            keyboard: false, interactive: false
+                        }).addTo(this.arrowsLayer);
+                    }
+                });
+            });
+            this._applyToggle(this.arrowsLayer, this.showArrows);
+            this._applyToggle(this.verticesLayer, this.showVertices);
         }
-    }
 
-    toggleVertices(show) {
-        this.showVertices = show;
-        if (show) {
-            this.verticesLayer.addTo(this.map);
-        } else {
-            this.map.removeLayer(this.verticesLayer);
+        _applyToggle(layer, show) {
+            if (!this.map || !layer) return;
+            if (show && !this.map.hasLayer(layer)) layer.addTo(this.map);
+            if (!show && this.map.hasLayer(layer)) this.map.removeLayer(layer);
         }
-    }
 
-    clear() {
-        if (this.geojsonLayer) this.geojsonLayer.clearLayers();
-        if (this.issuesLayer) this.issuesLayer.clearLayers();
-        if (this.conflictSegmentsLayer) this.conflictSegmentsLayer.clearLayers();
-        if (this.arrowsLayer) this.arrowsLayer.clearLayers();
-        if (this.verticesLayer) this.verticesLayer.clearLayers();
-    }
+        fitAll() {
+            if (!this.map) return;
+            const b = this.geojsonLayer.getBounds();
+            if (b.isValid()) this.map.fitBounds(b, { padding: [40, 40], maxZoom: 18 });
+        }
 
-    _calculateGeometryMetrics(geom) {
-        if (!geom) return { areaHa: 0, areaM2: 0, perimeterM: 0, vertexCount: 0 };
+        focusFeature(idx) {
+            const layer = this.featureLayers[idx];
+            if (!this.map || !layer) return;
+            const b = layer.getBounds ? layer.getBounds() : null;
+            if (b && b.isValid()) this.map.flyToBounds(b, { padding: [40, 40], maxZoom: 18, duration: 0.8 });
+            layer.openPopup?.();
+        }
 
-        let totalAreaM2 = 0;
-        let totalPerimeterM = 0;
-        let vertexCount = 0;
-
-        const processRing = (ring) => {
-            if (!Array.isArray(ring) || ring.length < 3) return;
-            vertexCount += (ring.length - 1);
-
-            // Geodesic perimeter
-            for (let i = 0; i < ring.length - 1; i++) {
-                totalPerimeterM += this._haversineDistance(ring[i], ring[i + 1]);
+        zoomToLocation(lon, lat, zoom = 18) {
+            if (this.map && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+                this.map.flyTo([lat, lon], zoom, { duration: 1.0 });
             }
-
-            // Approximate spherical polygon area
-            totalAreaM2 += this._sphericalPolygonArea(ring);
-        };
-
-        if (geom.type === 'Polygon') {
-            geom.coordinates.forEach((ring, idx) => {
-                if (idx === 0) processRing(ring); // Exterior
-            });
-        } else if (geom.type === 'MultiPolygon') {
-            geom.coordinates.forEach(poly => {
-                if (poly[0]) processRing(poly[0]);
-            });
         }
 
-        return {
-            areaHa: totalAreaM2 / 10000,
-            areaM2: totalAreaM2,
-            perimeterM: totalPerimeterM,
-            vertexCount: vertexCount
-        };
-    }
+        toggleArrows(show) { this.showArrows = show; this._applyToggle(this.arrowsLayer, show); }
+        toggleVertices(show) { this.showVertices = show; this._applyToggle(this.verticesLayer, show); }
 
-    _haversineDistance(p1, p2) {
-        const R = 6371000; // Earth radius in meters
-        const dLat = (p2[1] - p1[1]) * Math.PI / 180;
-        const dLon = (p2[0] - p1[0]) * Math.PI / 180;
-        const lat1 = p1[1] * Math.PI / 180;
-        const lat2 = p2[1] * Math.PI / 180;
-
-        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                  Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-    }
-
-    _sphericalPolygonArea(ring) {
-        const R = 6378137; // WGS84 semimajor axis
-        if (ring.length < 3) return 0;
-        let area = 0;
-        for (let i = 0; i < ring.length - 1; i++) {
-            const p1 = ring[i];
-            const p2 = ring[i + 1];
-            const lam1 = p1[0] * Math.PI / 180;
-            const lam2 = p2[0] * Math.PI / 180;
-            const phi1 = p1[1] * Math.PI / 180;
-            const phi2 = p2[1] * Math.PI / 180;
-            area += (lam2 - lam1) * (2 + Math.sin(phi1) + Math.sin(phi2));
+        clear() {
+            this.featureLayers = [];
+            [this.geojsonLayer, this.issuesLayer, this.conflictSegmentsLayer, this.arrowsLayer, this.verticesLayer]
+                .forEach(l => l && l.clearLayers());
+            const svg = document.getElementById('geo-svg');
+            if (svg) svg.innerHTML = '';
         }
-        area = Math.abs(area * R * R / 4.0);
-        return area;
-    }
 
-    _renderFallbackViewer(container) {
-        container.innerHTML = `
-            <div id="svg-map-fallback" class="svg-map-container">
-                <div class="offline-banner">
-                    <span>Modo Cartográfico Vectorial (Offline / Nativo)</span>
-                </div>
-                <svg id="geo-svg" width="100%" height="100%" viewBox="0 0 800 600"></svg>
-            </div>
-        `;
-    }
+        // ---------------------- Respaldo SVG sin conexión ----------------------
+        _initFallback(container) {
+            container.innerHTML = `
+                <div class="svg-map-container">
+                    <div class="offline-banner">Sin conexión al servicio de mapas: vista vectorial simplificada</div>
+                    <svg id="geo-svg" width="100%" height="100%" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet"></svg>
+                </div>`;
+        }
 
-    _renderFallbackData() {
-        const svg = document.getElementById('geo-svg');
-        if (!svg || !this.currentData) return;
+        _renderFallback() {
+            const svg = document.getElementById('geo-svg');
+            const features = featuresOf(this.currentData);
+            const info = this.validationResult?.features || [];
+            const all = [];
+            features.forEach(f => polygonRings(f && f.geometry).forEach(r => r.ring.forEach(p => all.push(p))));
+            if (!svg || !all.length) return { decorationsSkipped: true, totalVertices: 0 };
 
-        // Extract coordinates and transform to SVG space
-        let allPts = [];
-        const extract = (data) => {
-            const feats = data.type === 'FeatureCollection' ? data.features : [data];
-            feats.forEach(f => {
-                const geom = f.geometry;
-                if (!geom) return;
-                const coords = geom.type === 'Polygon' ? geom.coordinates[0] : (geom.type === 'MultiPolygon' ? geom.coordinates[0][0] : []);
-                coords.forEach(p => allPts.push(p));
+            const [minX, minY, maxX, maxY] = GeoUtils.bbox(all);
+            const pad = 30, W = 800, H = 600;
+            const kx = Math.cos(((minY + maxY) / 2) * Math.PI / 180) || 1;
+            const scale = Math.min((W - 2 * pad) / (((maxX - minX) * kx) || 1e-9), (H - 2 * pad) / ((maxY - minY) || 1e-9));
+            const tx = p => [(pad + (p[0] - minX) * kx * scale).toFixed(2), (H - pad - (p[1] - minY) * scale).toFixed(2)];
+
+            let out = '<rect width="100%" height="100%" fill="#0f172a"/>';
+            features.forEach((f, idx) => {
+                const color = STATUS_COLORS[info[idx]?.status] || STATUS_COLORS.VALIDO;
+                const d = polygonRings(f && f.geometry).map(({ ring }) => 'M' + ring.map(p => tx(p).join(',')).join('L') + 'Z').join(' ');
+                if (d) out += `<path d="${d}" fill="${color}" fill-opacity="0.25" fill-rule="evenodd" stroke="${color}" stroke-width="2"><title>${esc(info[idx]?.plot_id || '')}</title></path>`;
             });
-        };
-        extract(this.currentData);
-
-        if (allPts.length === 0) return;
-
-        const lons = allPts.map(p => p[0]);
-        const lats = allPts.map(p => p[1]);
-        const minX = Math.min(...lons), maxX = Math.max(...lons);
-        const minY = Math.min(...lats), maxY = Math.max(...lats);
-
-        const pad = 50;
-        const w = 800 - pad * 2, h = 600 - pad * 2;
-        const scaleX = w / (maxX - minX || 1);
-        const scaleY = h / (maxY - minY || 1);
-        const scale = Math.min(scaleX, scaleY);
-
-        const toSvg = (lon, lat) => {
-            const x = pad + (lon - minX) * scale;
-            const y = 600 - (pad + (lat - minY) * scale); // Invert y for SVG
-            return [x, y];
-        };
-
-        const pathPoints = allPts.map(p => toSvg(p[0], p[1]).join(',')).join(' ');
-
-        svg.innerHTML = `
-            <defs>
-                <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
-                </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="#0f172a"/>
-            <rect width="100%" height="100%" fill="url(#grid)"/>
-            <polygon points="${pathPoints}" fill="rgba(16, 185, 129, 0.25)" stroke="#10b981" stroke-width="2"/>
-        `;
+            (this.validationResult?.issues || []).forEach(i => {
+                if (i.severity === 'INFO' || !Array.isArray(i.location)) return;
+                const [x, y] = tx(i.location);
+                out += `<circle cx="${x}" cy="${y}" r="6" fill="none" stroke="${i.severity === 'ERROR' ? '#ef4444' : '#f59e0b'}" stroke-width="3"><title>${esc(i.category)}</title></circle>`;
+            });
+            svg.innerHTML = out;
+            return { decorationsSkipped: true, totalVertices: all.length };
+        }
     }
-}
+
+    root.GeoJSONMapViewer = GeoJSONMapViewer;
+})(typeof self !== 'undefined' ? self : this);

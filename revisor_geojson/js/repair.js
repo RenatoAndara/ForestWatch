@@ -1,122 +1,170 @@
 /**
- * GeoJSON Auto-Repair & Export Module
+ * Motor de Reparación y Exportación GeoJSON (RFC 7946)
+ *
+ * Autor: Renato Andara
+ *
+ * Correcciones automáticas y seguras (no alteran la forma de la parcela):
+ *   - Cierra anillos abiertos SIN perder vértices.
+ *   - Elimina vértices duplicados consecutivos (incluido el previo al cierre).
+ *   - Orienta anillos según la regla de la mano derecha (exterior CCW, huecos CW).
+ *   - Añade "properties": {} cuando falta.
+ *   - Elimina el miembro "crs" obsoleto cuando ya declara WGS84 (CRS84 / EPSG:4326).
+ *
+ * NO corrige (requiere decisión humana): auto-intersecciones, solapamientos,
+ * coordenadas fuera de rango o proyectadas.
  */
-
-export class GeoJSONRepairer {
-    static repair(geojsonObj) {
-        const repaired = JSON.parse(JSON.stringify(geojsonObj));
-        const changes = [];
-
-        const rootType = repaired.type;
-        if (rootType === 'FeatureCollection') {
-            (repaired.features || []).forEach((feat, fIdx) => {
-                this._repairFeature(feat, fIdx, changes);
-            });
-        } else if (rootType === 'Feature') {
-            this._repairFeature(repaired, 0, changes);
-        } else if (['Polygon', 'MultiPolygon'].includes(rootType)) {
-            const fakeFeat = { type: 'Feature', geometry: repaired };
-            this._repairFeature(fakeFeat, 0, changes);
-        }
-
-        if (!repaired.metadata) {
-            repaired.metadata = {};
-        }
-        repaired.metadata.repaired_by = 'Revisor y Reparador GeoJSON RFC 7946';
-        repaired.metadata.repaired_at = new Date().toISOString();
-        repaired.metadata.repair_notes = changes;
-
-        return {
-            repairedData: repaired,
-            changesCount: changes.length,
-            changes
-        };
+(function (root, factory) {
+    'use strict';
+    const geo = (typeof module === 'object' && module.exports)
+        ? require('./validator.js').GeoUtils
+        : root.GeoUtils;
+    const api = factory(geo);
+    if (typeof module === 'object' && module.exports) {
+        module.exports = api;
+    } else {
+        Object.assign(root, api);
     }
+})(typeof self !== 'undefined' ? self : this, function (GeoUtils) {
+    'use strict';
 
-    static _repairFeature(feat, fIdx, changes) {
-        const geom = feat.geometry;
-        if (!geom) return;
+    const isPosition = p => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
 
-        const gType = geom.type;
-        const coords = geom.coordinates;
-        const props = feat.properties || {};
-        const plotId = props.PlotID || props.id || props.name || `Parcela #${fIdx + 1}`;
+    class GeoJSONRepairer {
+        /**
+         * @param {object} geojsonObj  GeoJSON ya parseado.
+         * @param {object} [options]
+         * @param {boolean} [options.addMetadata=false]  Añadir bloque "metadata" de trazabilidad
+         *        (miembro ajeno permitido por RFC 7946 §6.1, pero algunos sistemas lo rechazan).
+         */
+        static repair(geojsonObj, options = {}) {
+            const repaired = JSON.parse(JSON.stringify(geojsonObj));
+            const changes = [];
+            const unrepaired = [];
+            const ctx = { changes, unrepaired };
 
-        if (gType === 'Polygon') {
-            geom.coordinates = this._repairPolygonRings(coords, plotId, changes);
-        } else if (gType === 'MultiPolygon') {
-            geom.coordinates = coords.map((polyCoords, pIdx) => {
-                return this._repairPolygonRings(polyCoords, `${plotId} [P${pIdx + 1}]`, changes);
-            });
-        }
-    }
-
-    static _repairPolygonRings(rings, plotId, changes) {
-        return rings.map((ring, rIdx) => {
-            if (!Array.isArray(ring) || ring.length < 3) return ring;
-
-            const isExterior = (rIdx === 0);
-            const ringName = isExterior ? 'exterior' : `interior (hueco ${rIdx})`;
-
-            // Step 1: Remove duplicate consecutive vertices
-            let cleaned = [ring[0]];
-            let dupsRemoved = 0;
-            for (let i = 1; i < ring.length - 1; i++) {
-                const prev = cleaned[cleaned.length - 1];
-                const curr = ring[i];
-                if (curr[0] === prev[0] && curr[1] === prev[1]) {
-                    dupsRemoved++;
+            if (repaired && typeof repaired === 'object' && repaired.crs !== undefined) {
+                if (this._crsIsWGS84(repaired.crs)) {
+                    delete repaired.crs;
+                    changes.push('Se eliminó el miembro "crs" (obsoleto en RFC 7946; ya declaraba WGS84).');
                 } else {
-                    cleaned.push(curr);
+                    unrepaired.push('El miembro "crs" declara un sistema distinto de WGS84: reproyecte el archivo a EPSG:4326 con un SIG (QGIS, ogr2ogr).');
                 }
             }
-            // Ensure closure
-            cleaned.push([cleaned[0][0], cleaned[0][1]]);
 
-            if (dupsRemoved > 0) {
-                changes.push(`${plotId} (${ringName}): Se eliminaron ${dupsRemoved} vértice(s) duplicados consecutivos.`);
+            const rootType = repaired && repaired.type;
+            if (rootType === 'FeatureCollection' && Array.isArray(repaired.features)) {
+                repaired.features.forEach((feat, fIdx) => this._repairFeature(feat, fIdx, ctx));
+            } else if (rootType === 'Feature') {
+                this._repairFeature(repaired, 0, ctx);
+            } else if (rootType) {
+                this._repairGeometry(repaired, 'Geometría raíz', ctx);
             }
 
-            // Step 2: Fix RFC 7946 winding order
-            const area = this._signedArea(cleaned);
-            const isCCW = area > 0;
-
-            if (isExterior && !isCCW) {
-                cleaned.reverse();
-                changes.push(`${plotId} (anillo exterior): Invertido a sentido antihorario (CCW) conforme a RFC 7946 §3.1.6.`);
-            } else if (!isExterior && isCCW) {
-                cleaned.reverse();
-                changes.push(`${plotId} (${ringName}): Invertido a sentido horario (CW) conforme a RFC 7946 §3.1.6.`);
+            if (options.addMetadata && repaired && typeof repaired === 'object') {
+                repaired.metadata = Object.assign({}, repaired.metadata, {
+                    repaired_by: 'Revisor GeoJSON RFC 7946',
+                    repaired_at: new Date().toISOString(),
+                    repair_notes: changes
+                });
             }
 
-            return cleaned;
-        });
-    }
-
-    static _signedArea(ring) {
-        let area = 0.0;
-        const n = ring.length;
-        for (let i = 0; i < n - 1; i++) {
-            const x1 = ring[i][0];
-            const y1 = ring[i][1];
-            const x2 = ring[i + 1][0];
-            const y2 = ring[i + 1][1];
-            area += (x1 * y2) - (x2 * y1);
+            return { repairedData: repaired, changesCount: changes.length, changes, unrepaired };
         }
-        return area;
+
+        static _crsIsWGS84(crs) {
+            const name = String(crs?.properties?.name ?? crs?.properties?.code ?? '').toUpperCase();
+            return /CRS84|EPSG:+4326|EPSG::4326|^4326$/.test(name);
+        }
+
+        static _repairFeature(feat, fIdx, ctx) {
+            if (!feat || typeof feat !== 'object' || feat.type !== 'Feature') return;
+            const label = GeoUtils.featureLabel(feat, fIdx);
+            if (!('properties' in feat)) {
+                feat.properties = {};
+                ctx.changes.push(`${label}: se añadió "properties": {} (miembro obligatorio en RFC 7946 §3.2).`);
+            }
+            if (feat.geometry && typeof feat.geometry === 'object') {
+                this._repairGeometry(feat.geometry, label, ctx);
+            }
+        }
+
+        static _repairGeometry(geom, label, ctx) {
+            if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+                geom.geometries.forEach((g, k) => g && this._repairGeometry(g, `${label} [Geom ${k + 1}]`, ctx));
+            } else if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
+                geom.coordinates = this._repairPolygon(geom.coordinates, label, ctx);
+            } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+                const multi = geom.coordinates.length > 1;
+                geom.coordinates = geom.coordinates.map((poly, k) =>
+                    Array.isArray(poly) ? this._repairPolygon(poly, multi ? `${label} [Parte ${k + 1}]` : label, ctx) : poly);
+            }
+        }
+
+        static _repairPolygon(rings, label, ctx) {
+            return rings.map((ring, rIdx) => {
+                const ringName = rIdx === 0 ? 'anillo exterior' : `hueco ${rIdx}`;
+                if (!Array.isArray(ring) || !ring.every(isPosition)) {
+                    ctx.unrepaired.push(`${label} (${ringName}): contiene coordenadas inválidas; corríjalas manualmente.`);
+                    return ring;
+                }
+                if (ring.length === 0) return ring;
+
+                const wasClosed = ring.length > 1 && GeoUtils.samePoint(ring[0], ring[ring.length - 1]);
+                const open = wasClosed ? ring.slice(0, -1) : ring.slice();
+
+                // Eliminar duplicados consecutivos (tratando el anillo como circular).
+                const cleaned = [];
+                for (const p of open) {
+                    if (cleaned.length && GeoUtils.samePoint(cleaned[cleaned.length - 1], p)) continue;
+                    cleaned.push(p);
+                }
+                while (cleaned.length > 1 && GeoUtils.samePoint(cleaned[0], cleaned[cleaned.length - 1])) cleaned.pop();
+                const removed = open.length - cleaned.length;
+
+                if (cleaned.length < 3) {
+                    ctx.unrepaired.push(`${label} (${ringName}): tiene menos de 3 vértices distintos; no puede formar un polígono.`);
+                    return ring;
+                }
+
+                const out = cleaned.concat([cleaned[0].slice()]);
+                if (!wasClosed) ctx.changes.push(`${label} (${ringName}): anillo cerrado repitiendo el primer vértice al final.`);
+                if (removed > 0) ctx.changes.push(`${label} (${ringName}): se eliminaron ${removed} vértice(s) duplicado(s) consecutivo(s).`);
+
+                const isCCW = GeoUtils.signedArea(out) > 0;
+                if (rIdx === 0 && !isCCW) {
+                    out.reverse();
+                    ctx.changes.push(`${label} (anillo exterior): orientación invertida a antihoraria (CCW) según RFC 7946 §3.1.6.`);
+                } else if (rIdx > 0 && isCCW) {
+                    out.reverse();
+                    ctx.changes.push(`${label} (${ringName}): orientación invertida a horaria (CW) según RFC 7946 §3.1.6.`);
+                }
+                return out;
+            });
+        }
+
+        static outputFilename(originalFilename) {
+            const base = String(originalFilename || 'archivo').replace(/\.(geo)?json$/i, '');
+            return `${base}_reparado_RFC7946.geojson`;
+        }
+
+        /** Descarga (solo navegador). */
+        static downloadGeoJSON(data, originalFilename) {
+            GeoJSONRepairer.downloadText(JSON.stringify(data, null, 2),
+                GeoJSONRepairer.outputFilename(originalFilename), 'application/geo+json;charset=utf-8');
+        }
+
+        static downloadText(text, filename, mime) {
+            const blob = new Blob([text], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
     }
 
-    static downloadGeoJSON(data, originalFilename = 'reparado.geojson') {
-        let filename = originalFilename.replace(/\.geojson$/i, '').replace(/\.json$/i, '') + '_reparado_RFC7946.geojson';
-        const jsonStr = JSON.stringify(data, null, 2);
-        const blob = new Blob([jsonStr], { type: 'application/geo+json;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    }
-}
+    return { GeoJSONRepairer };
+});

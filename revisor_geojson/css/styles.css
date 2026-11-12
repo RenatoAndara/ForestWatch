@@ -1,4 +1,5 @@
-/* Modern Geospatial Dark UI Styles */
+/* Revisor GeoJSON — estilos de la interfaz (tema oscuro SIG)
+   Autor: Renato Andara */
 :root {
     --bg-main: #0b0f19;
     --bg-card: #151e2e;
@@ -261,8 +262,8 @@ body {
 /* Metric Counter Cards */
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
 }
 
 .metric-card {
@@ -598,3 +599,127 @@ body {
     padding: 4px 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
+
+/* ===================== Mejoras v2 (Renato Andara) ===================== */
+.visually-hidden {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    overflow: hidden; clip: rect(0 0 0 0);
+    white-space: nowrap; border: 0; padding: 0; margin: -1px;
+}
+.dropzone:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.file-name {
+    font-size: 0.85rem;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+.status-caption {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 700;
+}
+.status-info {
+    background: rgba(6, 182, 212, 0.12);
+    color: var(--color-info);
+    border: 1px solid rgba(6, 182, 212, 0.4);
+}
+
+.metric-number-sm { font-size: 1.05rem !important; color: var(--text-primary); line-height: 1.9; }
+
+.rfc-notice-box summary { cursor: pointer; font-weight: 700; color: var(--text-primary); }
+.rfc-notice-box ul { margin: 8px 0 6px 16px; padding: 0; }
+.rfc-notice-box li { margin-bottom: 4px; }
+.rfc-notice-box code, .modal-option code { background: rgba(148, 163, 184, 0.15); padding: 0 4px; border-radius: 3px; }
+
+.tabs-header { flex-wrap: wrap; }
+.filter-tab { padding: 8px 9px; }
+.tab-count {
+    display: inline-block;
+    min-width: 1.4em;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    background: rgba(148, 163, 184, 0.12);
+    border-radius: 8px;
+    padding: 0 5px;
+}
+.tab-count:empty { display: none; }
+
+.search-input {
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 7px 10px;
+    background: #0f172a;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+}
+.search-input:focus { outline: none; border-color: var(--color-accent); }
+
+.table-wrapper { max-height: none; flex: 1; min-height: 220px; }
+.diagnostics-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.empty-state { text-align: center; padding: 30px 10px; color: var(--text-muted); font-size: 0.85rem; }
+.issues-table td.num, .issues-table th.num { text-align: right; white-space: nowrap; }
+.issues-table tr.clickable { cursor: pointer; }
+.issues-table tr.clickable:hover td { background: rgba(59, 130, 246, 0.08); }
+.text-center { text-align: center; }
+.btn-coord { text-align: left; line-height: 1.25; }
+
+.btn-small { padding: 4px 10px; font-size: 0.75rem; }
+
+.map-toolbar { flex-wrap: wrap; max-width: calc(100% - 80px); }
+.map-legend { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; color: var(--text-secondary); }
+.map-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 6px; }
+.map-note {
+    position: absolute;
+    bottom: 34px; left: 14px;
+    z-index: 1000;
+    max-width: 420px;
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid var(--color-warning);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+}
+
+.popup-props { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 0.72rem; }
+.popup-props th { text-align: left; color: #64748b; font-weight: 600; padding: 2px 6px 2px 0; vertical-align: top; white-space: nowrap; }
+.popup-props td { padding: 2px 0; word-break: break-word; }
+
+.repair-notes-list { max-height: 220px; overflow-y: auto; }
+.repair-after { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 0.8rem; line-height: 1.45; }
+.repair-after:empty { display: none; }
+.repair-after ul { margin: 6px 0 0 16px; padding: 0; max-height: 160px; overflow-y: auto; }
+.repair-after-ok { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); }
+.repair-after-warning { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); }
+.repair-after-error { background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.4); }
+.modal-option { display: block; margin-top: 12px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; }
+.modal-option small { display: block; margin-left: 22px; }
+.modal-footer { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+.svg-map-container { position: relative; width: 100%; height: 100%; background: #0f172a; }
+.offline-banner {
+    position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+    background: rgba(245, 158, 11, 0.15); border: 1px solid var(--color-warning);
+    color: var(--color-warning); font-size: 0.75rem; padding: 4px 10px; border-radius: 12px;
+}
+
+@media (max-width: 1024px) {
+    .sidebar-panel { overflow: visible; border-right: none; }
+    .map-viewport { height: 70vh; min-height: 420px; }
+    .table-wrapper { max-height: 420px; }
+}
+@media (max-width: 600px) {
+    .app-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    .file-name { max-width: 100%; }
+}
+.issue-msg-text { margin-top: 3px; color: var(--text-secondary); }

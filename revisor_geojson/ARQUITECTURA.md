@@ -1,175 +1,95 @@
-# ARQUITECTURA DEL SISTEMA
+# ARQUITECTURA — Revisor GeoJSON
 
-## Arquitectura de Software: Validador y Visualizador Cartográfico GeoJSON
+**Autor:** Renato Andara · **Versión:** 2.0.0
 
----
+## 1. Visión general
 
-### 1. Visión General de la Arquitectura
-
-El sistema está diseñado bajo una **arquitectura modular desacoplada basada en la web (Client-Side First)**, garantizando que el procesamiento y diagnóstico de las geometrías ocurra directamente en el entorno local del usuario sin transmitir datos sensibles a servidores externos.
-
-La solución combina un núcleo matemático de validación topológica y geométrica con una capa de visualización cartográfica en tiempo real sobre imágenes satelitales de alta resolución.
-
-```mermaid
-flowchart TD
-    subgraph UI ["Capa de Presentación e Interacción (index.html / CSS)"]
-        Dropzone["Dropzone (Drag & Drop / Input)"]
-        Toolbar["Barra de Control & Filtros"]
-        Dashboard["Panel Métrico & Tabla de Diagnósticos"]
-        MapContainer["Contenedor de Mapa Interactivo"]
-        ModalRepair["Modal de Reparación y Descarga"]
-    end
-
-    subgraph Controller ["Capa de Orquestación (js/app.js)"]
-        AppController["App Controller (Gestor de Eventos)"]
-    end
-
-    subgraph Core ["Capa de Lógica y Procesamiento Geoespacial"]
-        Validator["Motor de Validación (js/validator.js)"]
-        Repairer["Motor de Reparación (js/repair.js)"]
-        MapViewer["Controlador Cartográfico (js/map.js)"]
-    end
-
-    subgraph DataSources ["Fuentes de Datos Cartográficos"]
-        ESRI["Esri World Imagery (Satélite)"]
-        OSM["OpenStreetMap (Callejero)"]
-    end
-
-    Dropzone -->|Lectura de Archivo| AppController
-    AppController -->|Ejecuta Diagnóstico| Validator
-    Validator -->|Entrega Reporte & Métricas| AppController
-    AppController -->|Actualiza Estado y Tabla| Dashboard
-    AppController -->|Envía Geometría & Fallas| MapViewer
-    MapViewer -->|Carga Tiles| ESRI & OSM
-    MapViewer -->|Renderiza en Canvas/DOM| MapContainer
-    Toolbar -->|Alterna Vértices/Flechas| MapViewer
-    Dashboard -->|Clic en Coordenada| MapViewer
-    AppController -->|Solicita Reparación| Repairer
-    Repairer -->|Genera GeoJSON Saneado| ModalRepair
-```
-
----
-
-### 2. Estructura de Componentes y Capas
-
-La solución se organiza en 5 capas claramente delimitadas:
-
-```
-Revisor archivos GeoJSON/
-├── index.html                  # Capa de Presentación (Estructura DOM)
-├── css/
-│   └── styles.css              # Capa de Estilos (Diseño responsivo Dark GIS)
-├── js/
-│   ├── app.js                  # Capa de Orquestación y Coordinación
-│   ├── validator.js            # Capa de Lógica: Motor de Validación
-│   ├── repair.js               # Capa de Lógica: Motor de Reparación y Exportación
-│   └── map.js                  # Capa de Visualización: Controlador de Mapa Leaflet
-├── geojson_validator.py        # Motor de validación en Python (Línea de comandos / Pruebas)
-├── serve.py                    # Capa de Servidor Local y Lanzador
-└── tests/
-    ├── test_validator.py       # Pruebas automatizadas en Python
-    └── test_js_validator.js    # Pruebas automatizadas en JavaScript
-```
-
----
-
-### 3. Descripción Detallada de los Módulos
-
-#### 3.1. Módulo Orquestador (`js/app.js`)
-Actúa como controlador central (*Controller*):
-- Captura eventos de arrastrar y soltar (*drag & drop*) y selección de archivos locales mediante la API nativa `FileReader`.
-- Se vincula al elemento nativo `<label for="file-input">` asegurando la apertura inmediata de la ventana de selección de archivos en cualquier navegador sin depender de eventos sintéticos.
-- Resetea dinámicamente el valor del input para permitir cargas y re-evaluaciones continuas del mismo archivo o de archivos distintos.
-- Coordina el flujo de datos entre el analizador de archivos, el motor de validación, la tabla de resultados y el mapa cartográfico.
-- Aplica filtros dinámicos sobre la tabla de diagnósticos (Todos, Errores ❌, Alertas ⚠️, Información ℹ️).
-- Vincula eventos de clic en las coordenadas del reporte para realizar encuadres (*pan & zoom*) automáticos sobre el mapa.
-- Empaquetado como script universal autocontenido: elimina el bloqueo CORS de módulos ES al ejecutarse directamente mediante el protocolo local `file:///` y mantiene compatibilidad total con servidores HTTP (`http://localhost:8000`).
-
-#### 3.2. Motor de Validación Geoespacial (`js/validator.js`)
-Implementa una canalización de validación en 5 etapas independientes:
+Aplicación web 100 % cliente (sin servidor de aplicación): el archivo se lee con `FileReader`, se valida en el navegador y nunca se transmite. Un motor Python equivalente permite el uso por línea de comandos y la automatización.
 
 ```mermaid
 flowchart LR
-    E1["1. Sintaxis JSON & Formato GeoJSON"] --> E2["2. Límites WGS84 & Anillos Cerrados"]
-    E2 --> E3["3. Vértices Duplicados & Puntos de Contacto"]
-    E3 --> E4["4. Auto-intersecciones de Bordes"]
-    E4 --> E5["5. Regla Mano Derecha (RFC 7946 §3.1.6)"]
-```
-
-1. **Etapa 1 (Sintaxis y Estructura):** Valida tipos GeoJSON oficiales (`FeatureCollection`, `Feature`, `Polygon`, `MultiPolygon`).
-2. **Etapa 2 (Límites y Cierre):** Verifica que las coordenadas se ubiquen en el rango WGS84 (Longitud $[-180, 180]$, Latitud $[-90, 90]$), que cada anillo lineal contenga al menos 4 puntos y que el primer punto sea exactamente idéntico al último.
-3. **Etapa 3 (Vértices Duplicados):** Detecta vértices consecutivos redundantes y puntos de contacto no adyacentes (*pinch points*).
-4. **Etapa 4 (Auto-intersecciones):** Ejecuta la prueba de producto cruzado para localizar cruces de segmentos de recta no contiguos y calcula el punto exacto de la colisión.
-5. **Etapa 5 (Regla de la Mano Derecha):** Calcula el área con signo mediante la fórmula de Shoelace. Si el anillo exterior es horario (CW) o los anillos interiores son antihorarios (CCW), genera una **ALERTA** no bloqueante citando el RFC 7946 y los requisitos de EUDR/TRACES.
-
-#### 3.3. Controlador Cartográfico (`js/map.js`)
-Gestiona la renderización en el mapa interactivo mediante **Leaflet**:
-- **Ajuste Dinámico de Encuadre (`FitBounds`):** Calcula la caja envolvente de las geometrías y posiciona la cámara con margen ergonómico.
-- **Alternancia de Capas Base:** Permite seleccionar entre imágenes satelitales mundiales de alta resolución (**Esri World Imagery**) y mapas de vialidad y toponimia (**OpenStreetMap**).
-- **Estilos Semánticos:** Asigna colores a los polígonos según su estado de salud geométrica:
-  - 🟢 **Verde (`#10b981`):** Polígono completamente válido.
-  - 🟡 **Ámbar (`#f59e0b`):** Polígono con advertencias RFC 7946.
-  - 🔴 **Rojo (`#ef4444`):** Polígono con errores topológicos críticos.
-- **Marcador Pulsante de Solapamiento:** Sitúa un indicador visual pulsante sobre la coordenada exacta del cruce.
-- **Resaltado de Segmentos Cruzados:** Traza una línea discontinua de alta visibilidad sobre los segmentos que se intersectan.
-- **Indicadores Direccionales SVG:** Dibuja flechas orientadas a lo largo de los bordes del polígono que muestran visualmente si el giro es antihorario (CCW) u horario (CW).
-- **Numeración Secuencial de Vértices:** Permite activar o desactivar marcadores circulares del 1 al $N$ en cada vértice perimetral.
-- **Modo de Respaldo Vectorial Nativo:** Incorpora un visor SVG autónomo que garantiza la visualización de la geometría en caso de desconexión absoluta a internet.
-
-#### 3.4. Motor de Auto-Reparación y Exportador (`js/repair.js`)
-Proporciona utilidades de corrección no destructiva:
-- Invierte el orden del arreglo de coordenadas cuando un anillo exterior es horario o un hueco es antihorario, haciéndolo 100% compatible con RFC 7946.
-- Elimina vértices consecutivos duplicados manteniendo los linderos intactos.
-- Añade metadatos de trazabilidad (`metadata.repaired_by`, fecha y lista de cambios).
-- Genera un archivo `.geojson` descargable mediante la creación dinámica de un objeto `Blob` y un enlace virtual `URL.createObjectURL`.
-
-#### 3.5. Servidor Local y Lanzador (`serve.py`)
-Script en Python 3 que provee:
-- Servidor HTTP ligero basado en `http.server.SimpleHTTPRequestHandler`.
-- Inyección de cabeceras CORS y políticas de deshabilitación de caché (`no-cache, no-store`).
-- Mecanismo de búsqueda automática de puertos libres (de 8000 a 8010).
-- Apertura automática del navegador del sistema operativo con el módulo `webbrowser`.
-
----
-
-### 4. Diagrama de Secuencia del Flujo de Datos
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Usuario
-    participant UI as Interfaz (Dropzone)
-    participant App as App Controller
-    participant Val as GeoJSONValidator
-    participant Map as GeoJSONMapViewer
-    participant Rep as GeoJSONRepairer
-
-    Usuario->>UI: Arrastra o selecciona archivo GeoJSON
-    UI->>App: Evento onFileLoaded(content)
-    App->>Val: validate(geojsonString)
-    Val->>Val: Ejecuta fases 1 a 5
-    Val-->>App: Retorna { valid, status, summary, issues, data }
-    App->>UI: Actualiza Dashboard (Badges, Contadores y Tabla)
-    App->>Map: render(data, validationResult)
-    Map->>Map: Ajusta FitBounds + Dibuja Polígono + Flechas CCW + Marcador Error
-    
-    opt Usuario solicita auto-reparación
-        Usuario->>UI: Clic en "Reparar y Exportar RFC 7946"
-        UI->>App: Solicita reparación
-        App->>Rep: repair(currentGeoJSON)
-        Rep->>Rep: Invierte anillos CW -> CCW y purga duplicados
-        Rep-->>App: Retorna { repairedData, changes }
-        App->>UI: Abre modal con lista de correcciones
-        Usuario->>UI: Clic en "Descargar GeoJSON Corregido"
-        UI->>Rep: downloadGeoJSON(repairedData)
-        Rep-->>Usuario: Descarga archivo *_reparado_RFC7946.geojson
+    subgraph Navegador
+        UI["index.html + css/styles.css"] --> APP["js/app.js<br/>orquestador"]
+        APP --> VAL["js/validator.js<br/>GeoUtils + GeoJSONValidator"]
+        APP --> REP["js/repair.js<br/>GeoJSONRepairer"]
+        APP --> MAP["js/map.js<br/>GeoJSONMapViewer"]
+        REP --> VAL
+        MAP --> VAL
+        MAP --> LF["vendor/leaflet<br/>(local)"]
     end
+    LF -. "teselas (internet)" .-> TILES["Esri World Imagery / OSM"]
+    CLI["geojson_validator.py<br/>(CLI / pruebas)"] -. "paridad verificada" .- VAL
 ```
 
----
+## 2. Estructura
 
-### 5. Consideraciones de Seguridad y Privacidad
+```
+revisor_geojson/
+├── index.html              Interfaz
+├── css/styles.css          Estilos (tema oscuro, adaptable a móvil)
+├── js/
+│   ├── validator.js        FUENTE ÚNICA del motor: GeoUtils, GeoJSONValidator
+│   ├── repair.js           Reparador y descargas
+│   ├── map.js              Visor Leaflet + respaldo SVG
+│   └── app.js              Orquestación de la interfaz
+├── vendor/leaflet/         Leaflet 1.9.4 (BSD-2-Clause) incluido localmente
+├── geojson_validator.py    Motor Python equivalente + CLI
+├── serve.py                Servidor local (127.0.0.1)
+└── tests/
+    ├── fixtures/           Archivos de ejemplo + expected.json (compartidos JS/Python)
+    ├── test_validator.test.js
+    └── test_validator.py   Incluye prueba de paridad JS ↔ Python
+```
 
-- **Privacidad Total de Datos (Zero-Upload):** La totalidad del análisis, cálculo de áreas, detección de cruces y reparación ocurre localmente en el motor de JavaScript del navegador del usuario. No se envía ningún dato predial o confidencial a servidores remotos.
-- **Aislamiento y Sanitización:** Los textos e identificadores de parcelas son renderizados mediante propiedades seguras del DOM evitando inyecciones de código.
-- **Independencia de Dependencias:** El núcleo no depende de frameworks pesados (React, Angular) ni de compiladores (Webpack, Vite), facilitando una ejecución inmediata y sin mantenimiento de infraestructura.
+**Decisión clave — una sola fuente del motor JS.** Cada archivo de `js/` es un *script clásico* con envoltorio UMD: en el navegador publica sus clases en `window`, y en Node se carga con `require()`. Así funciona con doble clic (`file://`, donde los módulos ES están bloqueados por CORS) y las pruebas ejercitan exactamente el código que corre en el navegador. La versión 1 tenía el motor copiado dos veces (`app.js` y los módulos ES), y las pruebas validaban una copia distinta de la que se ejecutaba.
+
+Orden de carga: `leaflet.js` → `validator.js` → `repair.js` → `map.js` → `app.js`.
+
+## 3. Motor de validación (`js/validator.js`)
+
+### 3.1 Flujo
+
+1. **Entrada:** quita BOM UTF-8, detecta archivo vacío, `JSON.parse`.
+2. **Raíz:** FeatureCollection / Feature / geometría suelta; aviso por `crs`.
+3. **Por entidad:** estructura del Feature, geometría (incluye GeometryCollection recursiva), precisión de coordenadas.
+4. **Por posición:** numérica, rango WGS84 (agregado por anillo, con pista UTM / lat-lon invertidas).
+5. **Por anillo:** ≥ 4 posiciones, cerrado, duplicados consecutivos, degenerado, auto-intersecciones, orientación.
+6. **Por polígono:** huecos (cruces con otros anillos, contención, huecos anidados).
+7. **Global:** identificadores duplicados, solapamientos entre polígonos y entre partes de un MultiPolygon.
+8. **Resultado:** `{ valid, overall_status, status_text, features_count, summary, features[], issues[], data }`. `features[]` trae el estado, área, perímetro y vértices de cada entidad (para colorear el mapa y la pestaña *Entidades*).
+
+### 3.2 Geometría robusta
+
+- **`segmentRelation(p1,p2,q1,q2)`** clasifica cada par de segmentos en *cruce propio*, *contacto en un punto* o *superposición colineal*, con tolerancia relativa (1e-10) para el ruido de coma flotante. La v1 solo detectaba cruces propios y reportaba los puntos de contacto varias veces.
+- **Barrido por X (`sweepPairs`)**: los segmentos se ordenan por su X mínima y solo se comparan los que solapan en caja. Un anillo de 20 000 vértices se valida en ~0,1 s (antes O(n²) puro).
+- **Solapamiento entre parcelas** = intersección de **interiores**: hay solapamiento si existe un cruce propio entre bordes, o si algún vértice/punto medio de un polígono cae estrictamente dentro del otro (considerando huecos); si todos caen sobre el borde, las geometrías son idénticas. Así, compartir linderos o vértices no es solapamiento, y una parcela dentro del hueco de otra tampoco.
+- **Límite de diagnósticos:** máximo 25 por anillo + un resumen, para que un anillo desordenado no genere miles de filas.
+
+### 3.3 Métricas
+
+- Área esférica por la fórmula de Chamberlain-Duquette sobre R = 6 378 137 m; área neta = exterior − huecos.
+- Perímetro por Haversine (R medio = 6 371 008,8 m).
+- Son aproximaciones adecuadas para revisión; el valor oficial debe calcularse en un SIG con el elipsoide.
+
+## 4. Reparador (`js/repair.js`)
+
+Solo aplica correcciones que no cambian la forma: cerrar anillos (sin perder el último vértice, error de la v1), quitar duplicados consecutivos (incluido el previo al cierre), orientar anillos, añadir `properties`, quitar `crs` WGS84. Devuelve `{ repairedData, changes, unrepaired }`; la interfaz vuelve a validar el resultado e informa los errores que quedan. El bloque `metadata` es opcional (desactivado por defecto).
+
+## 5. Visor (`js/map.js`)
+
+- Leaflet local con `preferCanvas`; capa por entidad con color según su estado.
+- Marcadores de problemas (errores y alertas) y segmentos en conflicto, como capas activables.
+- Flechas de dirección con corrección de ángulo por latitud (Mercator) y números de vértice; se omiten por encima de 3000 vértices.
+- Respaldo SVG si Leaflet no está disponible: dibuja todas las parcelas (con huecos, `fill-rule="evenodd"`) y los puntos de problema.
+
+## 6. Seguridad y privacidad
+
+- **Zero-upload:** ningún dato sale del navegador (salvo las peticiones de teselas del mapa base, que solo revelan la zona visualizada).
+- **Escapado de HTML:** todo texto procedente del archivo (identificadores, propiedades, mensajes) pasa por `GeoUtils.escapeHtml` antes de insertarse en tablas o ventanas emergentes. La v1 insertaba `PlotID` y propiedades sin escapar (inyección de HTML/JS con un archivo malicioso).
+- **Servidor local** ligado a `127.0.0.1` (la v1 escuchaba en todas las interfaces, exponiendo la carpeta a la red local) y sin cabecera CORS abierta.
+- **Sin dependencias externas en tiempo de ejecución** salvo las teselas; Leaflet se distribuye en `vendor/` (hash SHA-256 idéntico al SRI oficial de la versión 1.9.4).
+
+## 7. Pruebas
+
+- `npm test` → 27 pruebas del motor JS con `node:test`.
+- `python -m unittest discover -s tests` → pruebas Python, incluida la **paridad**: ejecuta el motor JS sobre los mismos archivos y exige diagnósticos idénticos (severidad, categoría y mensaje).

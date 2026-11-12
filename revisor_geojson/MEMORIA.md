@@ -1,5 +1,7 @@
 # MEMORIA TÉCNICA Y DESCRIPTIVA
 
+**Autor:** Renato Andara · **Versión:** 2.0.0 (ver `CHANGELOG.md`)
+
 ## Sistema de Inspección, Validación de Integridad y Auto-Reparación de Archivos GeoJSON (RFC 7946 / EUDR / TRACES-NT)
 
 ---
@@ -8,7 +10,7 @@
 
 El formato **GeoJSON** es el estándar de facto en la web para el intercambio de estructuras de datos geoespaciales simples. En sectores estratégicos como la agricultura de precisión, la gestión catastral y el comercio agroalimentario internacional, la precisión de las geometrías de las parcelas es fundamental.
 
-Con la entrada en vigencia del **Reglamento sobre Productos Libres de Deforestación de la Unión Europea (EUDR - Regulation (EU) 2023/1115)** y la plataforma **TRACES-NT**, los operadores y productores están obligados a proporcionar polígonos de delimitación predial que cumplan con estándares rigurosos de topología y codificación. Geometrías con auto-intersecciones, lazos cruzados (*bowtie*), vértices redundantes o inconsistencias en la orientación de sus anillos provocan el rechazo automático de las declaraciones de diligencia debida en los motores geoespaciales europeos.
+Con la entrada en vigencia del **Reglamento sobre Productos Libres de Deforestación de la Unión Europea (EUDR - Regulation (EU) 2023/1115)** y la plataforma **TRACES-NT**, los operadores y productores están obligados a proporcionar polígonos de delimitación predial que cumplan con estándares rigurosos de topología y codificación. Geometrías con auto-intersecciones, lazos cruzados (*bowtie*), vértices redundantes o inconsistencias en la orientación de sus anillos pueden provocar el rechazo de las declaraciones de diligencia debida o errores en su procesamiento.
 
 Este proyecto surge ante la necesidad de contar con una herramienta autónoma, interactiva y de alta precisión capaz de diagnosticar la integridad técnica de archivos GeoJSON, representar visualmente los linderos en mapas satelitales de alta resolución, detectar de forma matemática cualquier solapamiento interno o externo y ofrecer mecanismos de saneamiento y exportación de archivos conformes.
 
@@ -31,13 +33,17 @@ Si un observador camina a lo largo del perímetro siguiendo el orden secuencial 
 3. En un agujero interno, para que el área sólida rellena quede a la izquierda, debe rotar en sentido **horario**.
 
 #### 2.3. Criterio de Clasificación: ALERTA frente a ERROR
-El RFC 7946 estipula que los analizadores (*parsers*) permisivos no deben rechazar de plano polígonos con orientación inversa por razones de compatibilidad retrospectiva con GeoJSON 2008. Sin embargo, sistemas modernos y fiscalizadores como **TRACES/EUDR** y motores GIS avanzados exigen estricto cumplimiento para evitar ambigüedades en superficies esféricas globales. Por este motivo, el sistema implementa la siguiente política de diagnóstico:
-- **Discrepancia en la Regla de la Mano Derecha (RFC 7946):** Se clasifica como **ALERTA (Advertencia no bloqueante)**.
-- **Auto-intersecciones, bordes cruzados, vértices duplicados o errores de sintaxis:** Se clasifican como **ERROR CRÍTICO (Bloqueante)**.
+El RFC 7946 §3.1.6 indica que, por compatibilidad con GeoJSON 2008, los analizadores **no deberían rechazar** polígonos que no sigan la regla de la mano derecha. Algunos sistemas sí exigen la orientación estricta, por lo que el sistema aplica esta política:
+- **Orientación contraria a la regla de la mano derecha:** **ALERTA** (no bloqueante, corregible automáticamente).
+- **Problemas de estructura, coordenadas o topología** (auto-intersecciones, espigas, puntos de contacto, anillos abiertos, vértices duplicados, huecos inválidos, solapamientos): **ERROR**.
+
+> Nota: los requisitos concretos de cada plataforma (por ejemplo, el sistema de información EUDR) pueden cambiar; verifíquelos siempre en la documentación oficial vigente.
 
 ---
 
 ### 3. Caso de Estudio Real: Finca "Rancho Alegre"
+
+> Los archivos `V19579584_RanchoAlegre_*.geojson` citados en esta sección no se incluyen en el paquete. Las pruebas automáticas usan ahora archivos sintéticos en `tests/fixtures/` que reproducen los mismos casos (auto-intersección, anillo válido, orientación horaria, etc.).
 
 Para calibrar y validar los algoritmos implementados, se utilizó como banco de pruebas la finca productora **Rancho Alegre** (`PlotID: V19579584RANCHOALEGRE`, `NodeID: VE-PROC-RANCHOALEGRE`):
 
@@ -67,44 +73,53 @@ Donde $x$ representa la Longitud e $y$ la Latitud:
 - Si $\text{Área con signo} > 0 \implies$ El recorrido es **Antihorario (CCW)**.
 - Si $\text{Área con signo} < 0 \implies$ El recorrido es **Horario (CW)**.
 
-#### 4.2. Algoritmo de Intersección de Segmentos y Detección de Cruces
-Para detectar auto-intersecciones entre segmentos de recta no contiguos $S_1 = (A, B)$ y $S_2 = (C, D)$, se empleó la prueba de orientación de giros en 2D basada en el producto cruzado vectorial:
+#### 4.2. Clasificación de Pares de Segmentos
+Para dos segmentos $S_1=(A,B)$ y $S_2=(C,D)$ se calcula el signo de la orientación
 
-$$\text{ccw}(P_1, P_2, P_3) = (y_3 - y_1)(x_2 - x_1) > (y_2 - y_1)(x_3 - x_1)$$
+$$o(P,Q,R) = (Q_x-P_x)(R_y-P_y) - (Q_y-P_y)(R_x-P_x)$$
 
-Dos segmentos se intersectan si y solo si:
-$$\text{ccw}(A, C, D) \neq \text{ccw}(B, C, D) \quad \land \quad \text{ccw}(A, B, C) \neq \text{ccw}(A, B, D)$$
+con una tolerancia relativa de $10^{-10}$ (se considera 0 si $|o| \le 10^{-10}\,|PQ|\,|PR|$), para absorber el ruido de coma flotante.
 
-Cuando se confirma la colisión, la coordenada exacta del punto de cruce $(P_x, P_y)$ se resuelve mediante determinantes:
+- **Cruce propio:** $o(C,D,A)\cdot o(C,D,B) < 0$ y $o(A,B,C)\cdot o(A,B,D) < 0$. El punto se obtiene por determinantes (fórmula de intersección de rectas).
+- **Superposición colineal:** las cuatro orientaciones son 0 y las proyecciones se solapan en más de un punto (bordes superpuestos o "espigas").
+- **Contacto:** una orientación es 0 y el extremo cae dentro del otro segmento (puntos de contacto y vértices sobre borde).
 
-$$P_x = \frac{(x_1 y_2 - y_1 x_2)(x_3 - x_4) - (x_1 - x_2)(x_3 y_4 - y_3 x_4)}{(x_1 - x_2)(y_3 - y_4) - (y_1 - y_2)(x_3 - x_4)}$$
+Para evitar la comparación de todos contra todos ($O(n^2)$), los segmentos se ordenan por su $x$ mínima y solo se comparan los que se solapan en su caja envolvente (barrido por X).
 
-$$P_y = \frac{(x_1 y_2 - y_1 x_2)(y_3 - y_4) - (y_1 - y_2)(x_3 y_4 - y_3 x_4)}{(x_1 - x_2)(y_3 - y_4) - (y_1 - y_2)(x_3 - x_4)}$$
+**Solapamiento entre parcelas.** Dos polígonos se solapan si sus **interiores** se intersectan: existe un cruce propio entre sus bordes, o un vértice o punto medio de borde de uno cae estrictamente dentro del otro (descontando huecos). Compartir linderos o vértices no es solapamiento.
 
 #### 4.3. Detección de Vértices Duplicados y Puntos de Contacto (*Pinch Points*)
 - **Duplicados Consecutivos:** Pares adyacentes $(p_i, p_{i+1})$ tales que $p_i = p_{i+1}$, los cuales introducen segmentos nulos y distorsionan el cálculo de ángulos.
-- **Puntos de Contacto (*Pinch Points*):** Vértices no adyacentes $(p_i, p_j)$ con idéntica coordenada geográfica que hacen que el polígono se toque a sí mismo sin cruzar bordes, dividiendo la superficie en múltiples lóbulos.
+- **Puntos de Contacto (*Pinch Points*):** Vértices no adyacentes $(p_i, p_j)$ con idéntica coordenada geográfica que hacen que el polígono se toque a sí mismo sin cruzar bordes, dividiendo la superficie en múltiples lóbulos. Cada punto se reporta una sola vez.
+- **Vértice sobre borde propio:** un vértice que toca el interior de otro borde del mismo anillo.
+- **Espiga:** dos segmentos consecutivos colineales que retroceden sobre la misma línea.
 
-#### 4.4. Cálculo Métrico Geodésico
-- **Perímetro Geodésico:** Calculado mediante la fórmula de Haversine sobre el radio medio terrestre ($R = 6,371,000 \text{ m}$):
-  $$d = 2 R \arcsin \left( \sqrt{\sin^2\left(\frac{\Delta \phi}{2}\right) + \cos(\phi_1)\cos(\phi_2)\sin^2\left(\frac{\Delta \lambda}{2}\right)} \right)$$
-- **Superficie Esférica:** Estimación geodésica del área en metros cuadrados y hectáreas utilizando la proyección sobre el elipsoide WGS84 ($R = 6,378,137 \text{ m}$).
+#### 4.4. Cálculo Métrico
+- **Perímetro:** fórmula de Haversine con el radio medio terrestre ($R = 6\,371\,008{,}8$ m).
+- **Superficie:** área esférica de Chamberlain-Duquette con $R = 6\,378\,137$ m:
+  $$A = \frac{R^2}{2}\left|\sum_i (\lambda_{i+1}-\lambda_i)\,(2+\sin\phi_i+\sin\phi_{i+1})\right|$$
+  El área neta de un polígono es la del anillo exterior menos la de sus huecos.
+
+> **Corrección v2:** la versión 1 dividía entre 4 en lugar de entre 2 y por tanto reportaba **la mitad** del área real; además ignoraba los huecos. Es un cálculo aproximado (esfera); para cifras oficiales use un SIG con el elipsoide WGS84.
 
 ---
 
 ### 5. Mecanismo de Auto-Reparación y Exportación
 
-El módulo `GeoJSONRepairer` realiza correcciones automáticas no destructivas:
-1. **Reversión de Sentido:** Si el anillo exterior posee orientación horaria (CW), invierte la secuencia del arreglo de coordenadas para transformarlo en antihorario (CCW). En huecos interiores, invierte de antihorario (CCW) a horario (CW).
-2. **Purga de Duplicados:** Filtra vértices repetidos adyacentes preservando la topología de cierre ($p_0 = p_n$).
-3. **Cierre de Anillos:** Restituye el vértice final si la distancia entre el primer y último punto difiere.
-4. **Metadatos de Trazabilidad:** Inyecta en el objeto GeoJSON un bloque `"metadata"` con el sello de reparación, fecha y lista de correcciones realizadas.
+El módulo `GeoJSONRepairer` solo aplica correcciones que no alteran la forma de las parcelas:
+1. **Cierre de anillos:** si el primer y último vértice difieren, se añade una copia del primero al final **sin eliminar ningún vértice** (la v1 descartaba el último vértice real).
+2. **Purga de duplicados consecutivos**, incluido el duplicado inmediatamente anterior al cierre.
+3. **Reversión de sentido:** exterior a antihorario (CCW), huecos a horario (CW).
+4. **Estructura:** añade `"properties": {}` si falta y elimina el miembro `crs` cuando ya declara WGS84.
+5. **Metadatos de trazabilidad (opcional):** bloque `"metadata"` con fecha y lista de cambios, desactivado por defecto porque algunos sistemas de carga podrían rechazar miembros adicionales.
+
+Tras reparar, la interfaz **vuelve a validar** el resultado y lista los errores que requieren corrección manual (auto-intersecciones, solapamientos, coordenadas proyectadas).
 
 ---
 
 ### 6. Consideraciones de Compatibilidad y Ejecución Universal
 
-Con el objetivo de garantizar una experiencia de usuario robusta y sin fricciones técnicas, se implementaron dos soluciones de diseño fundamentales:
-1. **Disparador Nativo de Carga de Archivos (`<label for="file-input">`):** La zona de carga (*dropzone*) se estructuró semánticamente como una etiqueta HTML vinculada al control de entrada de archivos. Esto asegura que la ventana del explorador del sistema operativo se abra siempre de manera nativa al hacer clic sobre el recuadro, eliminando cualquier fallo por interceptación de eventos en el navegador.
-2. **Ejecución Local Libre de Restricciones CORS:** Los motores de JavaScript fueron consolidados de forma autocontenida sin depender de módulos ES dinámicos (`type="module"`), lo que permite que la aplicación opere con total fluidez tanto al abrirse directamente desde el disco mediante el protocolo `file:///` (doble clic en `index.html`) como cuando es servida a través de un servidor HTTP local (`http://localhost:8000`).
-3. **Interfaz Neutralizada y Enfocada en Datos Propios:** Se retiraron botones de pruebas predeterminadas del frontend para ofrecer un espacio de trabajo limpio, donde el usuario visualiza y procesa exclusivamente sus propios archivos prediales y catastrales.
+1. **Carga nativa de archivos:** la zona de carga es un `<label for="file-input">`; el clic abre el selector del sistema de forma nativa (la v1 además llamaba a `click()` por código, lo que podía abrir el diálogo dos veces). Se admite arrastrar y soltar en toda la ventana.
+2. **Ejecución con `file://` y `http://`:** los scripts son clásicos con envoltorio UMD (no módulos ES), por lo que funcionan con doble clic y también se cargan con `require()` en las pruebas de Node. Existe una única copia del motor.
+3. **Leaflet local** en `vendor/`: el mapa interactivo funciona sin CDN; solo las imágenes base requieren internet. Si Leaflet no carga, se muestra una vista SVG.
+4. **Motor Python equivalente** (`geojson_validator.py`) con línea de comandos; una prueba de paridad garantiza que produce los mismos diagnósticos que el motor del navegador.
