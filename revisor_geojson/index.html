@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<!--
+    Revisor de Archivos GeoJSON (RFC 7946 / topología / EUDR)
+    Autor: Renato Andara
+-->
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="author" content="Renato Andara">
+    <meta name="description" content="Validador, visualizador y reparador local de archivos GeoJSON: formato RFC 7946, topología, solapamientos y regla de la mano derecha.">
+    <title>Revisor GeoJSON</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📐</text></svg>">
+    <!-- Leaflet 1.9.4 incluido localmente (vendor/): el mapa funciona sin CDN; solo las imágenes base requieren internet -->
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+    <header class="app-header">
+        <div class="brand-section">
+            <div class="brand-logo" aria-hidden="true">📐</div>
+            <div class="brand-title">
+                <h1>Revisor GeoJSON</h1>
+                <p>Formato RFC 7946 · Topología · Solapamientos · Regla de la mano derecha</p>
+                <p class="brand-credit">Desarrollado por Renato Andara (<a href="mailto:gerencia.sig@grupobotalon.com">gerencia.sig@grupobotalon.com</a>) para Grupo Botalón (2026)</p>
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <span id="current-file-name" class="file-name text-muted">Ningún archivo cargado</span>
+            <button id="btn-report-csv" class="btn btn-secondary" disabled title="Descargar los diagnósticos en CSV (Excel)">
+                <span aria-hidden="true">📄</span> CSV
+            </button>
+            <button id="btn-report-json" class="btn btn-secondary" disabled title="Descargar el reporte completo en JSON">
+                <span aria-hidden="true">🧾</span> JSON
+            </button>
+            <button id="btn-repair" class="btn btn-success" disabled>
+                <span aria-hidden="true">🛠️</span> Reparar y exportar
+            </button>
+        </div>
+    </header>
+
+    <div class="dashboard-container">
+
+        <aside class="sidebar-panel">
+
+            <label for="file-input" id="dropzone" class="dropzone">
+                <input type="file" id="file-input" class="visually-hidden" accept=".geojson,.json,application/geo+json,application/json">
+                <div class="dropzone-icon" aria-hidden="true">📂</div>
+                <div class="dropzone-text">
+                    <strong>Haz clic o arrastra un archivo GeoJSON</strong>
+                    <p>.geojson / .json · El archivo se analiza en tu equipo, no se sube a ningún servidor.</p>
+                </div>
+            </label>
+
+            <div class="status-card" aria-live="polite">
+                <div class="status-header">
+                    <span class="status-caption">Estado del archivo</span>
+                    <div id="overall-status-badge" class="status-pill status-info">
+                        <span>⏳</span> <strong>SIN ARCHIVO</strong>
+                    </div>
+                </div>
+                <div id="overall-status-text" class="status-text">
+                    Carga un archivo GeoJSON para iniciar el diagnóstico.
+                </div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div id="metric-errors-count" class="metric-number text-error">0</div>
+                    <div class="metric-label">Errores</div>
+                </div>
+                <div class="metric-card">
+                    <div id="metric-warnings-count" class="metric-number text-warning">0</div>
+                    <div class="metric-label">Alertas</div>
+                </div>
+                <div class="metric-card">
+                    <div id="metric-features-count" class="metric-number text-success">0</div>
+                    <div class="metric-label">Entidades</div>
+                </div>
+                <div class="metric-card">
+                    <div id="metric-area" class="metric-number metric-number-sm">—</div>
+                    <div class="metric-label">Área total</div>
+                </div>
+            </div>
+
+            <details class="rfc-notice-box">
+                <summary>¿Qué se revisa?</summary>
+                <ul>
+                    <li><strong>Error:</strong> JSON o estructura inválida, coordenadas fuera de WGS84 o no numéricas, anillos abiertos o con menos de 4 posiciones, vértices duplicados, auto-intersecciones, espigas, puntos de contacto, huecos fuera del polígono y solapamientos entre parcelas o partes.</li>
+                    <li><strong>Alerta:</strong> orientación contraria a la regla de la mano derecha (RFC 7946 §3.1.6: exterior antihorario, huecos horarios), miembro <code>crs</code> obsoleto, identificadores repetidos, falta de <code>properties</code>.</li>
+                    <li><strong>Info:</strong> precisión de coordenadas menor a 6 decimales, geometrías de punto.</li>
+                </ul>
+                Las parcelas colindantes que solo comparten linderos <strong>no</strong> se consideran solapadas.
+            </details>
+
+            <div class="diagnostics-section">
+                <div class="tabs-header" role="tablist">
+                    <button class="filter-tab active" role="tab" aria-selected="true" data-filter="ALL">Todos <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="ERROR">Errores <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="ALERTA">Alertas <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="INFO">Info <span class="tab-count"></span></button>
+                    <button class="filter-tab" role="tab" aria-selected="false" data-filter="FEATURES">Entidades <span class="tab-count"></span></button>
+                </div>
+                <input type="search" id="issues-search" class="search-input" placeholder="Buscar por parcela, categoría o texto…" aria-label="Buscar en los diagnósticos">
+
+                <div class="table-wrapper">
+                    <table class="issues-table">
+                        <thead id="issues-table-head">
+                            <tr><th style="width:74px">Nivel</th><th>Diagnóstico</th><th style="width:92px">Ubicación</th></tr>
+                        </thead>
+                        <tbody id="issues-table-body"></tbody>
+                    </table>
+                    <div id="issues-empty-state" class="empty-state">
+                        Aún no hay diagnósticos. Carga un archivo para ver los resultados.
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="map-viewport">
+            <div class="map-toolbar">
+                <label class="map-toggle-label">
+                    <input type="checkbox" id="toggle-arrows" checked>
+                    <span>Flechas de dirección</span>
+                </label>
+                <label class="map-toggle-label">
+                    <input type="checkbox" id="toggle-vertices" checked>
+                    <span>Números de vértice</span>
+                </label>
+                <button id="btn-fit" type="button" class="btn btn-secondary btn-small" title="Encuadrar todas las geometrías">⤢ Encuadrar</button>
+                <span class="map-legend">
+                    <i style="background:#10b981"></i>Válida
+                    <i style="background:#f59e0b"></i>Alerta
+                    <i style="background:#ef4444"></i>Error
+                </span>
+            </div>
+            <div id="map-note" class="map-note" hidden></div>
+            <div id="map"></div>
+        </main>
+    </div>
+
+    <div id="repair-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="repair-title">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3 id="repair-title">🛠️ Reparación automática</h3>
+                <button id="btn-close-modal" class="btn btn-secondary btn-small" aria-label="Cerrar">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Correcciones aplicadas (no cambian la forma de las parcelas):</p>
+                <ul id="repair-notes-list" class="repair-notes-list"></ul>
+                <div id="repair-after" class="repair-after"></div>
+                <label class="modal-option">
+                    <input type="checkbox" id="opt-metadata">
+                    Añadir bloque <code>metadata</code> con el registro de cambios
+                    <small class="text-muted">(miembro adicional permitido por RFC 7946, pero algunos sistemas de carga lo rechazan)</small>
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-load-fixed" class="btn btn-secondary">🔁 Revisar el archivo reparado</button>
+                <button id="btn-download-fixed" class="btn btn-success">💾 Descargar GeoJSON corregido</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="vendor/leaflet/leaflet.js"></script>
+    <!-- Scripts clásicos (no módulos): funcionan con doble clic (file://) y con serve.py -->
+    <script src="js/validator.js"></script>
+    <script src="js/repair.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

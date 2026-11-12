@@ -1,0 +1,44 @@
+{
+  "type": "FeatureCollection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::32619"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "PlotID": "UTM"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              472345.12,
+              876543.21
+            ],
+            [
+              472445.12,
+              876543.21
+            ],
+            [
+              472445.12,
+              876643.21
+            ],
+            [
+              472345.12,
+              876643.21
+            ],
+            [
+              472345.12,
+              876543.21
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

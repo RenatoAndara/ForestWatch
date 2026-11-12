@@ -1,0 +1,38 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "PlotID": "HORARIA"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -71.750123,
+              7.930234
+            ],
+            [
+              -71.750123,
+              7.932567
+            ],
+            [
+              -71.748456,
+              7.932567
+            ],
+            [
+              -71.748456,
+              7.930234
+            ],
+            [
+              -71.750123,
+              7.930234
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
