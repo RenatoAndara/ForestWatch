@@ -1,0 +1,9 @@
+{
+  "name": "revisor-geojson",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Validador e Inspector de Integridad GeoJSON RFC 7946",
+  "scripts": {
+    "test": "node tests/test_js_validator.js"
+  }
+}
